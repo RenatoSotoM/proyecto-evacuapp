@@ -14,7 +14,6 @@ export default function RoutesScreen() {
   const [loading, setLoading] = useState(false);
   const [selectedVariant, setSelectedVariant] = useState(0);
 
-  // Variantes dinámicas que se recalculan en base al GPS real del usuario
   const [routeVariants, setRouteVariants] = useState([
     { id: 0, title: 'Variante A: Directa Local', risk: 'Moderado', color: '#2563eb', destLat: -33.5937, destLon: -70.7029, description: 'Cargando ubicación...' },
     { id: 1, title: 'Variante B: Perimetral Segura', risk: 'Bajo', color: '#16a34a', destLat: -33.5937, destLon: -70.7029, description: 'Cargando ubicación...' },
@@ -71,14 +70,13 @@ export default function RoutesScreen() {
 
       setUserLocation({ lat: currentLat, lon: currentLon });
 
-      // Generar destinos locales dinámicos basados estrictamente en el GPS actual del usuario
       const dynamicVariants = [
         {
           id: 0,
           title: 'Variante A: Directa Local',
           risk: 'Moderado',
           color: '#2563eb',
-          destLat: currentLat + 0.012, // ~1.3 km al norte de tu posición real
+          destLat: currentLat + 0.012,
           destLon: currentLon + 0.008,
           description: 'Eje vial principal hacia la zona de seguridad urbana más próxima[cite: 1].'
         },
@@ -87,7 +85,7 @@ export default function RoutesScreen() {
           title: 'Variante B: Perimetral Segura',
           risk: 'Bajo',
           color: '#16a34a',
-          destLat: currentLat - 0.010, // ~1.1 km al sur de tu posición real
+          destLat: currentLat - 0.010,
           destLon: currentLon + 0.012,
           description: 'Ruta perimetral alternativa que evita congestión vehicular[cite: 1].'
         },
@@ -96,7 +94,7 @@ export default function RoutesScreen() {
           title: 'Variante C: Refugio Alternativo',
           risk: 'Mínimo',
           color: '#9333ea',
-          destLat: currentLat + 0.005, // ~1 km al este de tu posición real
+          destLat: currentLat + 0.005,
           destLon: currentLon - 0.015,
           description: 'Trayecto de menor riesgo hacia un punto de encuentro secundario[cite: 1].'
         }
@@ -175,7 +173,11 @@ export default function RoutesScreen() {
       </View>
 
       <View style={styles.variantsContainer}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 16 }}>
+        <ScrollView 
+          horizontal 
+          showsHorizontalScrollIndicator={false} 
+          contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingRight: 48 }}
+        >
           {routeVariants.map((variant, index) => (
             <TouchableOpacity
               key={variant.id}
