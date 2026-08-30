@@ -14,71 +14,107 @@ export default function RoutesScreen() {
   const [loading, setLoading] = useState(false);
   const [selectedVariant, setSelectedVariant] = useState(0);
 
-  // Variantes de rutas con destinos reales en la comuna para enrutamiento por calles reales (OSRM)
+  // Estado para almacenar los datos reales calculados por OSRM para cada variante
+  const [routeDetails, setRouteDetails] = useState([
+    { distance: 'Calculando...', time: '...', geometry: null },
+    { distance: 'Calculando...', time: '...', geometry: null },
+    { distance: 'Calculando...', time: '...', geometry: null },
+  ]);
+
+  // Variantes con destinos específicos en la zona sur / metropolitana
   const routeVariants = [
     {
       id: 0,
       title: 'Variante A: Directa Principal',
-      distance: '3.2 km',
-      time: '7 min (Auto)',
       risk: 'Moderado',
       color: '#2563eb', // Azul Waze activo
-      destLat: -33.5785, // Destino real hacia el norte (Hospital El Pino)
+      destLat: -33.5785, 
       destLon: -70.6850,
       description: 'Ruta vehicular principal. Sigue ejes viales asfaltados de alta capacidad.'
     },
     {
       id: 1,
       title: 'Variante B: Perimetral Segura',
-      distance: '4.5 km',
-      time: '11 min (Auto)',
       risk: 'Bajo',
       color: '#16a34a', // Verde seguro
-      destLat: -33.5720, // Destino poniente seguro
+      destLat: -33.5720, 
       destLon: -70.7100,
       description: 'Ruta perimetral que evita zonas de alta congestión y riesgo evaluado.'
     },
     {
       id: 2,
       title: 'Variante C: Alternativa Oriente',
-      distance: '5.1 km',
-      time: '14 min (Auto)',
       risk: 'Mínimo',
       color: '#9333ea', // Morado alternativo
-      destLat: -33.6050, // Destino sur/oriente
+      destLat: -33.6050, 
       destLon: -70.6750,
       description: 'Trayecto vehicular alternativo con menor flujo de tráfico reportado.'
     }
   ];
 
-  const handleCalculateRoutes = async () => {
+  // Función para calcular los kilómetros y tiempos reales consultando a OSRM
+  const calculateRealMetrics = async (lat: number, lon: number) => {
+    setLoading(true);
     try {
-      setLoading(true);
+      const updatedDetails = await Promise.all(
+        routeVariants.map(async (variant) => {
+          const url = `https://router.project-osrm.org/route/v1/driving/${lon},${lat};${variant.destLon},${variant.destLat}?overview=full&geometries=geojson`;
+          const res = await fetch(url);
+          const data = await res.json();
+
+          if (data.routes && data.routes.length > 0) {
+            const route = data.routes[0];
+            const km = (route.distance / 1000).toFixed(1) + ' km';
+            const minutes = Math.round(route.duration / 60) + ' min (Auto)';
+            return {
+              distance: km,
+              time: minutes,
+              geometry: route.geometry.coordinates
+            };
+          }
+          return { distance: 'N/A', time: 'N/A', geometry: null };
+        })
+      );
+      setRouteDetails(updatedDetails);
+    } catch (error) {
+      console.error('Error al calcular métricas reales:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleInitPosition = async () => {
+    try {
       let { status } = await Location.requestForegroundPermissionsAsync();
+      let currentLat = -33.5937;
+      let currentLon = -70.7029;
+
       if (status === 'granted') {
         let location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-        setUserLocation({
-          lat: location.coords.latitude,
-          lon: location.coords.longitude
-        });
+        currentLat = location.coords.latitude;
+        currentLon = location.coords.longitude;
+        setUserLocation({ lat: currentLat, lon: currentLon });
       }
-      setTimeout(() => {
-        setLoading(false);
-      }, 500);
+
+      // Calcular distancias reales desde la posición obtenida
+      await calculateRealMetrics(currentLat, currentLon);
     } catch (error) {
       setLoading(false);
-      alert('Error al calcular las variantes viales.');
+      alert('Error al obtener la ubicación actual.');
     }
   };
 
   useEffect(() => {
-    handleCalculateRoutes();
+    handleInitPosition();
   }, []);
 
   const currentRoute = routeVariants[selectedVariant];
+  const currentMetric = routeDetails[selectedVariant] || { distance: '...', time: '...' };
 
-  // HTML que consulta OSRM (Open Source Routing Machine) para obtener las calles reales de OSM
+  // HTML del mapa renderizando la geometría exacta obtenida de OSRM
   const generateRouteMapHtml = () => {
+    const coordsJson = currentMetric.geometry ? JSON.stringify(currentMetric.geometry.map(c => [c[1], c[0]])) : '[]';
+
     return `
       <!DOCTYPE html>
       <html>
@@ -94,7 +130,7 @@ export default function RoutesScreen() {
           var map = L.map('map', { zoomControl: false }).setView([${userLocation.lat}, ${userLocation.lon}], 14);
           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-          // Marcador de Vehículo (Origen)
+          // Marcador del Vehículo (Origen)
           L.marker([${userLocation.lat}, ${userLocation.lon}], {
             icon: L.divIcon({
               className: 'vehicle-marker',
@@ -112,46 +148,28 @@ export default function RoutesScreen() {
             })
           }).addTo(map).bindPopup('<b>Zona Segura Vehicular</b>');
 
-          // Petición al motor de ruteo OSRM para seguir las calles reales de OpenStreetMap
-          var startLon = ${userLocation.lon};
-          var startLat = ${userLocation.lat};
-          var destLon = ${currentRoute.destLon};
-          var destLat = ${currentRoute.destLat};
+          var coords = ${coordsJson};
+          if (coords.length > 0) {
+            // Sombra de ruta estilo Waze
+            L.polyline(coords, {
+              color: '#1e3a8a',
+              weight: 8,
+              opacity: 0.5,
+              lineCap: 'round',
+              lineJoin: 'round'
+            }).addTo(map);
 
-          var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/' + startLon + ',' + startLat + ';' + destLon + ',' + destLat + '?overview=full&geometries=geojson';
+            // Línea principal sobre las calles reales
+            var mainPolyline = L.polyline(coords, {
+              color: '${currentRoute.color}',
+              weight: 5,
+              opacity: 0.95,
+              lineCap: 'round',
+              lineJoin: 'round'
+            }).addTo(map);
 
-          fetch(osrmUrl)
-            .then(function(res) { return res.json(); })
-            .then(function(data) {
-              if (data.routes && data.routes.length > 0) {
-                var coords = data.routes[0].geometry.coordinates.map(function(c) {
-                  return [c[1], c[0]]; // Leaflet requiere [lat, lon]
-                });
-
-                // Sombra de ruta estilo Waze
-                L.polyline(coords, {
-                  color: '#1e3a8a',
-                  weight: 8,
-                  opacity: 0.5,
-                  lineCap: 'round',
-                  lineJoin: 'round'
-                }).addTo(map);
-
-                // Ruta principal oficial sobre las calles de OSM
-                var mainPolyline = L.polyline(coords, {
-                  color: '${currentRoute.color}',
-                  weight: 5,
-                  opacity: 0.95,
-                  lineCap: 'round',
-                  lineJoin: 'round'
-                }).addTo(map);
-
-                map.fitBounds(mainPolyline.getBounds(), {padding: [50, 50]});
-              }
-            })
-            .catch(function(err) {
-              console.error('Error al obtener ruta OSRM:', err);
-            });
+            map.fitBounds(mainPolyline.getBounds(), {padding: [50, 50]});
+          }
         </script>
       </body>
       </html>
@@ -163,21 +181,21 @@ export default function RoutesScreen() {
       {/* Header Fijo */}
       <View style={styles.header}>
         <View style={styles.headerContent}>
-          <Text style={styles.headerTitle}>Navegación Vehicular (IA Tesis)</Text>
-          <TouchableOpacity style={styles.calcButton} onPress={handleCalculateRoutes} disabled={loading}>
+          <Text style={styles.headerTitle}>Navegación Vehicular (Tesis)</Text>
+          <TouchableOpacity style={styles.calcButton} onPress={handleInitPosition} disabled={loading}>
             {loading ? (
               <ActivityIndicator size="small" color="#fff" />
             ) : (
               <>
                 <MaterialIcons name="alt-route" size={16} color="#fff" />
-                <Text style={styles.calcButtonText}>Calcular Rutas</Text>
+                <Text style={styles.calcButtonText}>Recalcular</Text>
               </>
             )}
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Selector Horizontal de Variantes de Rutas (Foco Riesgo / Vehículo) */}
+      {/* Selector Horizontal de Variantes */}
       <View style={styles.variantsContainer}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 16 }}>
           {routeVariants.map((variant, index) => (
@@ -197,7 +215,7 @@ export default function RoutesScreen() {
         </ScrollView>
       </View>
 
-      {/* Tarjeta de Información Detallada */}
+      {/* Tarjeta de Información Detallada con Kilómetros Reales */}
       <View style={styles.infoCardContainer}>
         <View style={styles.infoCard}>
           <View style={{ flex: 1 }}>
@@ -208,13 +226,13 @@ export default function RoutesScreen() {
             <Text style={styles.infoDesc}>{currentRoute.description}</Text>
           </View>
           <View style={styles.metricsBox}>
-            <Text style={styles.metricDist}>{currentRoute.distance}</Text>
-            <Text style={styles.metricTime}>{currentRoute.time}</Text>
+            <Text style={styles.metricDist}>{currentMetric.distance}</Text>
+            <Text style={styles.metricTime}>{currentMetric.time}</Text>
           </View>
         </View>
       </View>
 
-      {/* Contenedor del Mapa con Calles Reales de OSM */}
+      {/* Contenedor del Mapa */}
       <View style={styles.mapContainer}>
         {Platform.OS === 'web' ? (
           // @ts-ignore
@@ -222,7 +240,7 @@ export default function RoutesScreen() {
             key={`${userLocation.lat}-${userLocation.lon}-${selectedVariant}`}
             srcDoc={generateRouteMapHtml()} 
             style={{ width: '100%', height: '100%', border: 0 }} 
-            title="Navegación Vehicular Oficial Tesis" 
+            title="Navegación Real" 
           />
         ) : (
           <WebView 

@@ -1,0 +1,1 @@
+# Lógica del servidor (Python/FastAPI o Node.js)
