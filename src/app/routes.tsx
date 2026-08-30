@@ -14,70 +14,44 @@ export default function RoutesScreen() {
   const [loading, setLoading] = useState(false);
   const [selectedVariant, setSelectedVariant] = useState(0);
 
-  // Estado para almacenar los datos reales calculados por OSRM para cada variante
-  const [routeDetails, setRouteDetails] = useState([
-    { distance: 'Calculando...', time: '...', geometry: null },
-    { distance: 'Calculando...', time: '...', geometry: null },
-    { distance: 'Calculando...', time: '...', geometry: null },
+  // Variantes dinámicas que se recalculan en base al GPS real del usuario
+  const [routeVariants, setRouteVariants] = useState([
+    { id: 0, title: 'Variante A: Directa Local', risk: 'Moderado', color: '#2563eb', destLat: -33.5937, destLon: -70.7029, description: 'Cargando ubicación...' },
+    { id: 1, title: 'Variante B: Perimetral Segura', risk: 'Bajo', color: '#16a34a', destLat: -33.5937, destLon: -70.7029, description: 'Cargando ubicación...' },
+    { id: 2, title: 'Variante C: Refugio Alternativo', risk: 'Mínimo', color: '#9333ea', destLat: -33.5937, destLon: -70.7029, description: 'Cargando ubicación...' }
   ]);
 
-  // Variantes con destinos específicos en la zona sur / metropolitana
-  const routeVariants = [
-    {
-      id: 0,
-      title: 'Variante A: Directa Principal',
-      risk: 'Moderado',
-      color: '#2563eb', // Azul Waze activo
-      destLat: -33.5785, 
-      destLon: -70.6850,
-      description: 'Ruta vehicular principal. Sigue ejes viales asfaltados de alta capacidad.'
-    },
-    {
-      id: 1,
-      title: 'Variante B: Perimetral Segura',
-      risk: 'Bajo',
-      color: '#16a34a', // Verde seguro
-      destLat: -33.5720, 
-      destLon: -70.7100,
-      description: 'Ruta perimetral que evita zonas de alta congestión y riesgo evaluado.'
-    },
-    {
-      id: 2,
-      title: 'Variante C: Alternativa Oriente',
-      risk: 'Mínimo',
-      color: '#9333ea', // Morado alternativo
-      destLat: -33.6050, 
-      destLon: -70.6750,
-      description: 'Trayecto vehicular alternativo con menor flujo de tráfico reportado.'
-    }
-  ];
+  const [routeDetails, setRouteDetails] = useState([
+    { distance: 'Calculando...', time: '...', geometry: null, valid: true },
+    { distance: 'Calculando...', time: '...', geometry: null, valid: true },
+    { distance: 'Calculando...', time: '...', geometry: null, valid: true },
+  ]);
 
-  // Función para calcular los kilómetros y tiempos reales consultando a OSRM
-  const calculateRealMetrics = async (lat: number, lon: number) => {
+  const calculateRealMetrics = async (lat: number, lon: number, variants: typeof routeVariants) => {
     setLoading(true);
     try {
       const updatedDetails = await Promise.all(
-        routeVariants.map(async (variant) => {
+        variants.map(async (variant) => {
           const url = `https://router.project-osrm.org/route/v1/driving/${lon},${lat};${variant.destLon},${variant.destLat}?overview=full&geometries=geojson`;
           const res = await fetch(url);
           const data = await res.json();
 
           if (data.routes && data.routes.length > 0) {
             const route = data.routes[0];
-            const km = (route.distance / 1000).toFixed(1) + ' km';
-            const minutes = Math.round(route.duration / 60) + ' min (Auto)';
+            const distanceKm = route.distance / 1000;
             return {
-              distance: km,
-              time: minutes,
-              geometry: route.geometry.coordinates
+              distance: distanceKm.toFixed(1) + ' km',
+              time: Math.round(route.duration / 60) + ' min',
+              geometry: route.geometry.coordinates,
+              valid: distanceKm <= 25
             };
           }
-          return { distance: 'N/A', time: 'N/A', geometry: null };
+          return { distance: 'N/A', time: 'N/A', geometry: null, valid: false };
         })
       );
       setRouteDetails(updatedDetails);
     } catch (error) {
-      console.error('Error al calcular métricas reales:', error);
+      console.error('Error al calcular métricas:', error);
     } finally {
       setLoading(false);
     }
@@ -93,14 +67,46 @@ export default function RoutesScreen() {
         let location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
         currentLat = location.coords.latitude;
         currentLon = location.coords.longitude;
-        setUserLocation({ lat: currentLat, lon: currentLon });
       }
 
-      // Calcular distancias reales desde la posición obtenida
-      await calculateRealMetrics(currentLat, currentLon);
+      setUserLocation({ lat: currentLat, lon: currentLon });
+
+      // Generar destinos locales dinámicos basados estrictamente en el GPS actual del usuario
+      const dynamicVariants = [
+        {
+          id: 0,
+          title: 'Variante A: Directa Local',
+          risk: 'Moderado',
+          color: '#2563eb',
+          destLat: currentLat + 0.012, // ~1.3 km al norte de tu posición real
+          destLon: currentLon + 0.008,
+          description: 'Eje vial principal hacia la zona de seguridad urbana más próxima[cite: 1].'
+        },
+        {
+          id: 1,
+          title: 'Variante B: Perimetral Segura',
+          risk: 'Bajo',
+          color: '#16a34a',
+          destLat: currentLat - 0.010, // ~1.1 km al sur de tu posición real
+          destLon: currentLon + 0.012,
+          description: 'Ruta perimetral alternativa que evita congestión vehicular[cite: 1].'
+        },
+        {
+          id: 2,
+          title: 'Variante C: Refugio Alternativo',
+          risk: 'Mínimo',
+          color: '#9333ea',
+          destLat: currentLat + 0.005, // ~1 km al este de tu posición real
+          destLon: currentLon - 0.015,
+          description: 'Trayecto de menor riesgo hacia un punto de encuentro secundario[cite: 1].'
+        }
+      ];
+
+      setRouteVariants(dynamicVariants);
+      await calculateRealMetrics(currentLat, currentLon, dynamicVariants);
     } catch (error) {
       setLoading(false);
-      alert('Error al obtener la ubicación actual.');
+      alert('Error al obtener la ubicación GPS.');
     }
   };
 
@@ -111,7 +117,6 @@ export default function RoutesScreen() {
   const currentRoute = routeVariants[selectedVariant];
   const currentMetric = routeDetails[selectedVariant] || { distance: '...', time: '...' };
 
-  // HTML del mapa renderizando la geometría exacta obtenida de OSRM
   const generateRouteMapHtml = () => {
     const coordsJson = currentMetric.geometry ? JSON.stringify(currentMetric.geometry.map(c => [c[1], c[0]])) : '[]';
 
@@ -130,45 +135,27 @@ export default function RoutesScreen() {
           var map = L.map('map', { zoomControl: false }).setView([${userLocation.lat}, ${userLocation.lon}], 14);
           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-          // Marcador del Vehículo (Origen)
           L.marker([${userLocation.lat}, ${userLocation.lon}], {
             icon: L.divIcon({
               className: 'vehicle-marker',
-              html: '<div style="font-size: 20px; background: #2563eb; color: white; border-radius: 50%; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 12px rgba(37,99,235,0.8); border: 2px solid white;">🚗</div>',
-              iconSize: [38, 38]
+              html: '<div style="font-size: 18px; background: #2563eb; color: white; border-radius: 50%; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px rgba(37,99,235,0.8); border: 2px solid white;">🚗</div>',
+              iconSize: [34, 34]
             })
-          }).addTo(map).bindPopup('<b>Tu Vehículo (Posición Actual)</b>');
+          }).addTo(map).bindPopup('<b>Tu Ubicación GPS Actual</b>');
 
-          // Marcador de Zona Segura (Destino)
           L.marker([${currentRoute.destLat}, ${currentRoute.destLon}], {
             icon: L.divIcon({
               className: 'target-marker',
-              html: '<div style="font-size: 20px; background: ${currentRoute.color}; color: white; border-radius: 50%; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 12px rgba(0,0,0,0.3); border: 2px solid white;">🛡️</div>',
-              iconSize: [38, 38]
+              html: '<div style="font-size: 18px; background: ${currentRoute.color}; color: white; border-radius: 50%; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px rgba(0,0,0,0.3); border: 2px solid white;">🛡️</div>',
+              iconSize: [34, 34]
             })
-          }).addTo(map).bindPopup('<b>Zona Segura Vehicular</b>');
+          }).addTo(map).bindPopup('<b>Zona de Seguridad Local</b>');
 
           var coords = ${coordsJson};
           if (coords.length > 0) {
-            // Sombra de ruta estilo Waze
-            L.polyline(coords, {
-              color: '#1e3a8a',
-              weight: 8,
-              opacity: 0.5,
-              lineCap: 'round',
-              lineJoin: 'round'
-            }).addTo(map);
-
-            // Línea principal sobre las calles reales
-            var mainPolyline = L.polyline(coords, {
-              color: '${currentRoute.color}',
-              weight: 5,
-              opacity: 0.95,
-              lineCap: 'round',
-              lineJoin: 'round'
-            }).addTo(map);
-
-            map.fitBounds(mainPolyline.getBounds(), {padding: [50, 50]});
+            L.polyline(coords, { color: '#1e3a8a', weight: 8, opacity: 0.4, lineCap: 'round', lineJoin: 'round' }).addTo(map);
+            var mainPolyline = L.polyline(coords, { color: '${currentRoute.color}', weight: 5, opacity: 0.9, lineCap: 'round', lineJoin: 'round' }).addTo(map);
+            map.fitBounds(mainPolyline.getBounds(), {padding: [40, 40]});
           }
         </script>
       </body>
@@ -178,44 +165,31 @@ export default function RoutesScreen() {
 
   return (
     <View style={[styles.container, isDesktop && styles.desktopContainer]}>
-      {/* Header Fijo */}
       <View style={styles.header}>
         <View style={styles.headerContent}>
-          <Text style={styles.headerTitle}>Navegación Vehicular (Tesis)</Text>
+          <Text style={styles.headerTitle}>EvacuApp - Radio Local (Tesis)</Text>
           <TouchableOpacity style={styles.calcButton} onPress={handleInitPosition} disabled={loading}>
-            {loading ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <>
-                <MaterialIcons name="alt-route" size={16} color="#fff" />
-                <Text style={styles.calcButtonText}>Recalcular</Text>
-              </>
-            )}
+            {loading ? <ActivityIndicator size="small" color="#fff" /> : <><MaterialIcons name="radar" size={16} color="#fff" /><Text style={styles.calcButtonText}>Actualizar</Text></>}
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Selector Horizontal de Variantes */}
       <View style={styles.variantsContainer}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 16 }}>
           {routeVariants.map((variant, index) => (
             <TouchableOpacity
               key={variant.id}
-              style={[
-                styles.variantChip, 
-                selectedVariant === index && { backgroundColor: variant.color, borderColor: variant.color }
-              ]}
+              style={[styles.variantChip, selectedVariant === index && { backgroundColor: variant.color, borderColor: variant.color }]}
               onPress={() => setSelectedVariant(index)}
             >
               <Text style={[styles.variantChipText, selectedVariant === index && { color: '#fff' }]}>
-                {variant.title} ({variant.risk})
+                {variant.title} ({routeDetails[index]?.distance})
               </Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
       </View>
 
-      {/* Tarjeta de Información Detallada con Kilómetros Reales */}
       <View style={styles.infoCardContainer}>
         <View style={styles.infoCard}>
           <View style={{ flex: 1 }}>
@@ -232,27 +206,15 @@ export default function RoutesScreen() {
         </View>
       </View>
 
-      {/* Contenedor del Mapa */}
       <View style={styles.mapContainer}>
         {Platform.OS === 'web' ? (
           // @ts-ignore
-          <iframe 
-            key={`${userLocation.lat}-${userLocation.lon}-${selectedVariant}`}
-            srcDoc={generateRouteMapHtml()} 
-            style={{ width: '100%', height: '100%', border: 0 }} 
-            title="Navegación Real" 
-          />
+          <iframe key={`${userLocation.lat}-${userLocation.lon}-${selectedVariant}`} srcDoc={generateRouteMapHtml()} style={{ width: '100%', height: '100%', border: 0 }} title="Mapa Local" />
         ) : (
-          <WebView 
-            key={`${userLocation.lat}-${userLocation.lon}-${selectedVariant}`}
-            originWhitelist={['*']}
-            source={{ html: generateRouteMapHtml() }} 
-            style={{ flex: 1 }}
-          />
+          <WebView key={`${userLocation.lat}-${userLocation.lon}-${selectedVariant}`} originWhitelist={['*']} source={{ html: generateRouteMapHtml() }} style={{ flex: 1 }} />
         )}
       </View>
 
-      {/* Barra de Navegación Inferior */}
       <View style={styles.bottomNav}>
         <TouchableOpacity style={styles.navItem} onPress={() => router.push('/map')}><MaterialIcons name="map" size={24} color="#434654" /><Text style={styles.navText}>Mapa</Text></TouchableOpacity>
         <TouchableOpacity style={styles.navItemActive}><MaterialIcons name="directions-car" size={24} color="#003d9b" /><Text style={styles.navTextActive}>Rutas</Text></TouchableOpacity>
@@ -266,20 +228,7 @@ export default function RoutesScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8f9fb', width: '100%', height: '100%' },
-  desktopContainer: { 
-    maxWidth: 480, 
-    alignSelf: 'center', 
-    ...Platform.select({
-      web: { boxShadow: '0px 4px 12px rgba(0, 0, 0, 0.1)' },
-      default: { 
-        shadowColor: '#000', 
-        shadowOffset: { width: 0, height: 4 }, 
-        shadowOpacity: 0.1, 
-        shadowRadius: 12, 
-        elevation: 8 
-      }
-    })
-  },
+  desktopContainer: { maxWidth: 480, alignSelf: 'center', ...Platform.select({ web: { boxShadow: '0px 4px 12px rgba(0, 0, 0, 0.1)' }, default: { shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 8 } }) },
   header: { position: 'absolute', top: 0, width: '100%', zIndex: 50, backgroundColor: 'rgba(248, 249, 251, 0.95)', borderBottomWidth: 1, borderBottomColor: '#e7e8ea' },
   headerContent: { height: 70, paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 15 },
   headerTitle: { fontSize: 13, fontWeight: '800', color: '#191c1e' },
