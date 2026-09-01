@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, View, ActivityIndicator } from 'react-native';
-import { api } from '../services/api';
+import { api } from '../config/api';
 
 export default function AlertsTabScreen() {
   const [emergency, setEmergency] = useState<any>(null);

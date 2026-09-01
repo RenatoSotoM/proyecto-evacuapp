@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, ActivityIndicator, Dimensions, TouchableOpacity } from 'react-native';
+import { StyleSheet, Text, View, ActivityIndicator, Dimensions, TouchableOpacity, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 import * as Location from 'expo-location';
 import { useLocalSearchParams, router } from 'expo-router';
+import { OSRM_BASE_URL } from '../config/api';
 
 export default function RouteDetailScreen() {
   const { lat, lng, name } = useLocalSearchParams();
@@ -13,26 +14,24 @@ export default function RouteDetailScreen() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    calculateStreetRoute();
+    calculateRoute();
   }, []);
 
-  const calculateStreetRoute = async () => {
+  const calculateRoute = async () => {
     try {
-      let currentOrigin;
+      let currentOrigin = { latitude: -33.5851, longitude: -70.7010 }; // Coordenada de prueba inicial
+
       try {
-        const location = await Location.getCurrentPositionAsync({ accuracy: Location.LocationAccuracy.Balanced });
-        currentOrigin = {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-        };
-        
-        // Si el GPS está fuera de Chile (ej: emulador en USA), forzamos San Bernardo para pruebas OSRM
-        if (currentOrigin.latitude > 0 || currentOrigin.longitude > -70) {
-          currentOrigin = { latitude: -33.5851, longitude: -70.7010 };
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          const location = await Location.getCurrentPositionAsync({ accuracy: Location.LocationAccuracy.Balanced });
+          currentOrigin = {
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+          };
         }
       } catch (e) {
-        // Respaldo si falla el GPS
-        currentOrigin = { latitude: -33.5851, longitude: -70.7010 };
+        console.warn('Usando coordenadas por defecto');
       }
 
       setOrigin(currentOrigin);
@@ -40,8 +39,10 @@ export default function RouteDetailScreen() {
       const destLat = Number(lat);
       const destLng = Number(lng);
 
-      // Petición al OSRM local
-      const osrmUrl = `http://192.168.100.12:5000/route/v1/driving/${currentOrigin.longitude},${currentOrigin.latitude};${destLng},${destLat}?overview=full&geometries=geojson`;
+      // ==========================================
+      // AQUÍ VA LA LÍNEA DEL OSRM PÚBLICO
+      // ==========================================
+      const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${currentOrigin.longitude},${currentOrigin.latitude};${destLng},${destLat}?overview=full&geometries=geojson`;
       
       const res = await fetch(osrmUrl);
       const data = await res.json();
@@ -54,18 +55,12 @@ export default function RouteDetailScreen() {
         setDistance((route.distance / 1000).toFixed(2) + ' km');
         setDuration(Math.ceil(route.duration / 60) + ' min');
       } else {
-        // Respaldo geométrico directo si OSRM no responde en red local
         setRouteCoords([[currentOrigin.latitude, currentOrigin.longitude], [destLat, destLng]]);
-        setDistance('4.2 km');
-        setDuration('12 min');
+        setDistance('3.5 km');
+        setDuration('10 min');
       }
     } catch (error) {
-      console.warn('Usando respaldo de emergencia para el mapa');
-      const fallbackOrigin = { latitude: -33.5851, longitude: -70.7010 };
-      setOrigin(fallbackOrigin);
-      setRouteCoords([[fallbackOrigin.latitude, fallbackOrigin.longitude], [Number(lat), Number(lng)]]);
-      setDistance('4.2 km');
-      setDuration('12 min');
+      console.error('Error calculando ruta:', error);
     } finally {
       setLoading(false);
     }
@@ -75,11 +70,12 @@ export default function RouteDetailScreen() {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#003d9b" />
-        <Text style={styles.loadingText}>Trazando red vial...</Text>
+        <Text style={styles.loadingText}>Calculando trayecto vial...</Text>
       </View>
     );
   }
 
+  // Renderizado compatible con Web y WebView móvil
   const mapHtml = `
     <!DOCTYPE html>
     <html>
@@ -93,7 +89,7 @@ export default function RouteDetailScreen() {
       <div id="map"></div>
       <script>
         var map = L.map('map', { zoomControl: false }).setView([${origin.latitude}, ${origin.longitude}], 14);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}@{x}/{y}.png', { maxZoom: 19 }).addTo(map);
         
         L.circleMarker([${origin.latitude}, ${origin.longitude}], { color: '#fff', fillColor: '#003d9b', fillOpacity: 1, radius: 9 }).addTo(map).bindPopup('Origen');
         L.circleMarker([${lat}, ${lng}], { color: '#fff', fillColor: '#28a745', fillOpacity: 1, radius: 11 }).addTo(map).bindPopup('${name}');
@@ -110,7 +106,16 @@ export default function RouteDetailScreen() {
 
   return (
     <View style={styles.container}>
-      <WebView style={styles.map} source={{ html: mapHtml }} javaScriptEnabled={true} />
+      {Platform.OS === 'web' ? (
+        // En PC/Web se inyecta directamente un iframe HTML seguro para Leaflet
+        <iframe
+          srcDoc={mapHtml}
+          style={{ width: '100%', height: '100%', border: 'none' }}
+        />
+      ) : (
+        <WebView style={styles.map} source={{ html: mapHtml }} javaScriptEnabled={true} />
+      )}
+
       <View style={styles.sheet}>
         <View style={styles.infoContainer}>
           <Text style={styles.label} numberOfLines={1}>Destino: {name}</Text>
