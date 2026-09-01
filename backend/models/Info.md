@@ -1,1 +1,0 @@
-# Modelos de IA o cálculo de rutas de tesis o machine learning
