@@ -1,14 +1,45 @@
+import React from 'react';
 import { Stack } from 'expo-router';
+import { AppProvider } from '../context/AppContext';
+import { SyncStatusBadge } from '../components/sync/SyncStatusBadge';
 
 export default function RootLayout() {
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="index" />
-      <Stack.Screen name="map" />
-      <Stack.Screen name="routes" />
-      <Stack.Screen name="report" />
-      <Stack.Screen name="alerts" />
-      <Stack.Screen name="profile" />
-    </Stack>
+    <AppProvider>
+      <Stack>
+        <Stack.Screen
+          name="(tabs)"
+          options={{
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="login"
+          options={{
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="register"
+          options={{
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="report-form"
+          options={{
+            title: 'Nuevo Reporte',
+            headerBackTitle: 'Volver',
+          }}
+        />
+        <Stack.Screen
+          name="meeting-points"
+          options={{
+            title: 'Puntos de Encuentro',
+            headerBackTitle: 'Volver',
+          }}
+        />
+      </Stack>
+    </AppProvider>
   );
 }

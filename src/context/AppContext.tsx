@@ -1,11 +1,23 @@
-import { api } from '../services/api';
+import React, { useEffect } from 'react';
+import { AuthProvider } from './AuthContext';
+import { EmergencyProvider } from './EmergencyContext';
+import { initDatabase } from '../services/storage/database';
 
-export const checkEmergencyStatus = async () => {
-  try {
-    const response = await api.get('/emergencies/active');
-    return response.data?.status === 'ACTIVE';
-  } catch (error) {
-    console.error('Error al verificar estado de emergencia', error);
-    return false;
-  }
+export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  useEffect(() => {
+    // Inicializar base de datos al arrancar la app
+    initDatabase();
+  }, []);
+
+  return (
+    <AuthProvider>
+      <EmergencyProvider>
+        {children}
+      </EmergencyProvider>
+    </AuthProvider>
+  );
 };
+
+// Exportar hooks para fácil acceso
+export { useAuth } from './AuthContext';
+export { useEmergency } from './EmergencyContext';
