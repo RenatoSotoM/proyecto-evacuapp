@@ -1,37 +1,66 @@
 package com.example.proyecto_evacuapp.ui.components
 
 import androidx.compose.runtime.mutableStateListOf
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
 object IncidentSharedState {
+
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO
+    )
 
     private val incidentList = mutableStateListOf<SharedIncident>()
 
     val incidents: List<SharedIncident>
         get() = incidentList
 
-    fun addLocalIncident(incident: SharedIncident) {
-        incidentList.removeAll { it.localId == incident.localId }
-        incidentList.add(0, incident)
+    private var initialized = false
+    private lateinit var incidentDao: IncidentDao
+
+    fun initialize(database: EvacuAppDatabase) {
+        if (initialized) return
+
+        initialized = true
+        incidentDao = database.incidentDao()
+
+        scope.launch {
+            incidentDao.observeAll().collectLatest { entities ->
+                val restoredIncidents = entities.map { entity ->
+                    entity.toSharedIncident()
+                }
+
+                incidentList.clear()
+                incidentList.addAll(restoredIncidents)
+            }
+        }
     }
 
-    fun replaceIncident(updatedIncident: SharedIncident) {
-        val index = incidentList.indexOfFirst {
-            it.localId == updatedIncident.localId
-        }
+    fun addLocalIncident(incident: SharedIncident) {
+        val localIncident = incident.copy(
+            status = IncidentStatus.LOCAL_PENDING,
+            updatedAtMillis = System.currentTimeMillis()
+        )
 
-        if (index >= 0) {
-            incidentList[index] = updatedIncident
-        } else {
-            incidentList.add(0, updatedIncident)
-        }
+        replaceInMemory(localIncident)
+        persist(localIncident)
     }
 
     fun confirmIncident(localId: String) {
-        updateVote(localId = localId, isConfirmation = true)
+        updateVote(
+            localId = localId,
+            isConfirmation = true
+        )
     }
 
     fun rejectIncident(localId: String) {
-        updateVote(localId = localId, isConfirmation = false)
+        updateVote(
+            localId = localId,
+            isConfirmation = false
+        )
     }
 
     fun verifiedBlockedSegmentIds(): Set<String> {
@@ -51,33 +80,99 @@ object IncidentSharedState {
 
         if (index < 0) return
 
-        val incident = incidentList[index]
+        val current = incidentList[index]
 
-        val alpha = if (isConfirmation) {
-            incident.alpha + 1.0
+        val newAlpha = if (isConfirmation) {
+            current.alpha + 1.0
         } else {
-            incident.alpha
+            current.alpha
         }
 
-        val beta = if (isConfirmation) {
-            incident.beta
+        val newBeta = if (isConfirmation) {
+            current.beta
         } else {
-            incident.beta + 1.0
+            current.beta + 1.0
         }
 
-        val confidence = alpha / (alpha + beta)
+        val confidence = newAlpha / (newAlpha + newBeta)
 
-        val nextStatus = when {
+        val newStatus = when {
             confidence >= 0.75 -> IncidentStatus.VERIFIED
             confidence >= 0.50 -> IncidentStatus.PROBABLE
             else -> IncidentStatus.PENDING
         }
 
-        incidentList[index] = incident.copy(
-            alpha = alpha,
-            beta = beta,
-            status = nextStatus,
+        val updatedIncident = current.copy(
+            alpha = newAlpha,
+            beta = newBeta,
+            status = newStatus,
             updatedAtMillis = System.currentTimeMillis()
         )
+
+        replaceInMemory(updatedIncident)
+        persist(updatedIncident)
     }
+
+    private fun replaceInMemory(incident: SharedIncident) {
+        val index = incidentList.indexOfFirst {
+            it.localId == incident.localId
+        }
+
+        if (index >= 0) {
+            incidentList[index] = incident
+        } else {
+            incidentList.add(0, incident)
+        }
+    }
+
+    private fun persist(incident: SharedIncident) {
+        if (!::incidentDao.isInitialized) return
+
+        scope.launch {
+            incidentDao.upsert(
+                incident.toEntity()
+            )
+        }
+    }
+}
+
+private fun SharedIncident.toEntity(): IncidentEntity {
+    return IncidentEntity(
+        localId = localId,
+        remoteId = remoteId,
+        type = type.name,
+        severity = severity.name,
+        description = description,
+        latitude = latitude,
+        longitude = longitude,
+        createdAtMillis = createdAtMillis,
+        updatedAtMillis = updatedAtMillis,
+        alpha = alpha,
+        beta = beta,
+        status = status.name,
+        affectedSegmentIds = affectedSegmentIds.joinToString(","),
+        isOwnReport = isOwnReport
+    )
+}
+
+private fun IncidentEntity.toSharedIncident(): SharedIncident {
+    return SharedIncident(
+        localId = localId,
+        remoteId = remoteId,
+        type = IncidentType.valueOf(type),
+        severity = IncidentSeverity.valueOf(severity),
+        description = description,
+        latitude = latitude,
+        longitude = longitude,
+        createdAtMillis = createdAtMillis,
+        updatedAtMillis = updatedAtMillis,
+        alpha = alpha,
+        beta = beta,
+        status = IncidentStatus.valueOf(status),
+        affectedSegmentIds = affectedSegmentIds
+            .split(",")
+            .filter { it.isNotBlank() }
+            .toSet(),
+        isOwnReport = isOwnReport
+    )
 }

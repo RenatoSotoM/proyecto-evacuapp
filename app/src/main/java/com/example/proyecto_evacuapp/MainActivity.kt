@@ -1,5 +1,8 @@
 package com.example.proyecto_evacuapp
 
+import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
+import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
+
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -55,6 +58,9 @@ import java.io.File
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val database = EvacuAppDatabase.getInstance(applicationContext)
+        IncidentSharedState.initialize(database)
 
         Configuration.getInstance().apply {
             userAgentValue = "EvacuApp-UBO-StudentProject/1.0 (${packageName}; contact: evacuapp@ubo.cl)"
