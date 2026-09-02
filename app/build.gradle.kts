@@ -36,6 +36,30 @@ android {
 }
 
 dependencies {
+
+    implementation("org.maplibre.gl:android-sdk:11.5.0")
+
+    // GeoJSON para capas y rutas sobre MapLibre
+
+
+    // Room: incidentes, rutas y metadata offline
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+
+    // WorkManager: descargas/actualizaciones diferidas
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+
+    // Preferencias de perfil, coordenada, radio y configuración
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    // Coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // Para solicitud de red y descarga de datos
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+
+    implementation("org.maplibre.gl:android-sdk:11.8.0")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
