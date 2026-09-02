@@ -1,8 +1,9 @@
 package com.example.proyecto_evacuapp.ui.components
-/* CAMBIOS BASE 1 DESEPTIEMBRE */
+
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -19,54 +20,42 @@ import org.osmdroid.views.overlay.Marker
 @Composable
 fun MapViewOSM(
     modifier: Modifier = Modifier,
-    latitude: Double = -33.5951,
-    longitude: Double = -70.7022,
-    zoomLevel: Double = 15.5
+    latitude: Double?,
+    longitude: Double?,
+    zoomLevel: Double = 16.5,
+    recenterTrigger: Int = 0
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    val mapView = remember {
-        // Asegurar que el UserAgent se registre antes de solicitar mosaicos
+    val (mapView, userMarker) = remember {
         Configuration.getInstance().userAgentValue = "EvacuApp-UBO-StudentProject/1.0 (${context.packageName})"
-
-        MapView(context).apply {
+        val map = MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
             isTilesScaledToDpi = true
             controller.setZoom(zoomLevel)
-            controller.setCenter(GeoPoint(latitude, longitude))
-
             overlays.clear()
+        }
 
-            // Marcador de usuario
-            val userMarker = Marker(this).apply {
-                position = GeoPoint(latitude, longitude)
-                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                title = "Tu ubicación actual"
-                setInfoWindow(null)
-            }
-            overlays.add(userMarker)
+        val marker = Marker(map).apply {
+            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+            title = "Tu ubicación actual"
+            setInfoWindow(null)
+        }
+        map.overlays.add(marker)
 
-            // Marcador de zona segura
-            val safeZoneMarker = Marker(this).apply {
-                position = GeoPoint(-33.5890, -70.6970)
-                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                title = "Zona Segura: Parque García de la Huerta"
-                setInfoWindow(null)
-            }
-            overlays.add(safeZoneMarker)
+        Pair(map, marker)
+    }
 
-            // Marcador de incidente
-            val hazardMarker = Marker(this).apply {
-                position = GeoPoint(-33.5920, -70.7010)
-                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                title = "Incidente: Bloqueo de vía"
-                setInfoWindow(null)
-            }
-            overlays.add(hazardMarker)
-
-            invalidate()
+    // Centrado dinámico en la posición real emitida por el dispositivo
+    LaunchedEffect(latitude, longitude, recenterTrigger) {
+        if (latitude != null && longitude != null) {
+            val userLocation = GeoPoint(latitude, longitude)
+            userMarker.position = userLocation
+            userMarker.isEnabled = true
+            mapView.controller.animateTo(userLocation, zoomLevel, 800L)
+            mapView.invalidate()
         }
     }
 
