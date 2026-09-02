@@ -1,7 +1,5 @@
 package com.example.proyecto_evacuapp
 
-import org.osmdroid.config.Configuration
-
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -51,13 +49,13 @@ import com.example.proyecto_evacuapp.ui.theme.EvacuBlueLight
 import com.example.proyecto_evacuapp.ui.theme.ProyectoevacuappTheme
 import com.example.proyecto_evacuapp.ui.theme.SurfaceWhite
 import com.example.proyecto_evacuapp.ui.theme.TextSecondary
+import org.osmdroid.config.Configuration
 import java.io.File
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Configuración obligatoria para evitar el Error 403 en OpenStreetMap
         Configuration.getInstance().apply {
             userAgentValue = "EvacuApp-UBO-StudentProject/1.0 (${packageName}; contact: evacuapp@ubo.cl)"
             osmdroidBasePath = File(cacheDir, "osmdroid")
@@ -87,12 +85,24 @@ fun EvacuAppApp() {
     var currentFlow by remember { mutableStateOf(ScreenFlow.SPLASH) }
     var selectedEmergency by remember { mutableStateOf("Terremoto") }
 
+    // Perfil de movilidad y acompañantes seleccionado en el onboarding/setup
+    var userMobilityProfile by remember { mutableStateOf("Vehículo") }
+    var userCompanions by remember { mutableStateOf(setOf("Solo")) }
+
     when (currentFlow) {
         ScreenFlow.SPLASH -> SplashScreen(onContinue = { currentFlow = ScreenFlow.ONBOARDING })
         ScreenFlow.ONBOARDING -> OnboardingScreen(onFinish = { currentFlow = ScreenFlow.INITIAL_SETUP })
-        ScreenFlow.INITIAL_SETUP -> InitialSetupScreen(onFinish = { currentFlow = ScreenFlow.MAIN_TABS })
+        ScreenFlow.INITIAL_SETUP -> InitialSetupScreen(
+            onFinishWithProfile = { mobility, companions ->
+                userMobilityProfile = mobility
+                userCompanions = companions
+                currentFlow = ScreenFlow.MAIN_TABS
+            }
+        )
         ScreenFlow.MAIN_TABS -> MainTabsContainer(
-            onOpenEmergency = { currentFlow = ScreenFlow.EMERGENCY_SELECT }
+            userMobility = userMobilityProfile,
+            onOpenEmergency = { currentFlow = ScreenFlow.EMERGENCY_SELECT },
+            onChangeMobility = { userMobilityProfile = it }
         )
         ScreenFlow.EMERGENCY_SELECT -> EmergencyTypeSelectScreen(
             onEmergencySelected = { type ->
@@ -115,7 +125,11 @@ fun EvacuAppApp() {
 data class BottomNavTab(val label: String, val icon: ImageVector)
 
 @Composable
-fun MainTabsContainer(onOpenEmergency: () -> Unit) {
+fun MainTabsContainer(
+    userMobility: String,
+    onOpenEmergency: () -> Unit,
+    onChangeMobility: (String) -> Unit
+) {
     var selectedTabIndex by remember { mutableIntStateOf(0) }
 
     val tabs = listOf(
@@ -169,7 +183,11 @@ fun MainTabsContainer(onOpenEmergency: () -> Unit) {
         ) {
             when (selectedTabIndex) {
                 0 -> MapScreen(onFindRoute = onOpenEmergency)
-                1 -> RoutesScreen(onSelectRoute = onOpenEmergency)
+                1 -> RoutesScreen(
+                    mobilityMode = userMobility,
+                    onSelectRoute = onOpenEmergency,
+                    onChangeMobility = onChangeMobility
+                )
                 2 -> ReportsScreen()
                 3 -> AlertsScreen()
                 4 -> ProfileScreen()

@@ -56,10 +56,13 @@ import com.example.proyecto_evacuapp.ui.theme.SurfaceWhite
 import com.example.proyecto_evacuapp.ui.theme.TextPrimary
 import com.example.proyecto_evacuapp.ui.theme.TextSecondary
 
+// Modifica la cabecera y el botón final de InitialSetupScreen:
 @Composable
-fun InitialSetupScreen(onFinish: () -> Unit) {
+fun InitialSetupScreen(
+    onFinishWithProfile: (mobility: String, companions: Set<String>) -> Unit
+) {
     var step by remember { mutableIntStateOf(1) }
-    var selectedMobility by remember { mutableStateOf("A pie") }
+    var selectedMobility by remember { mutableStateOf("Vehículo") }
     var selectedCompanions by remember { mutableStateOf(setOf("Solo")) }
 
     Surface(
@@ -127,7 +130,9 @@ fun InitialSetupScreen(onFinish: () -> Unit) {
             }
 
             Button(
-                onClick = { if (step < 3) step++ else onFinish() },
+                onClick = {
+                    if (step < 3) step++ else onFinishWithProfile(selectedMobility, selectedCompanions)
+                },
                 modifier = Modifier.fillMaxWidth().height(56.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(

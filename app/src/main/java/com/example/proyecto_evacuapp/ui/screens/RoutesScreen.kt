@@ -25,9 +25,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoGraph
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DirectionsBike
+import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.ThumbDown
+import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.WheelchairPickup
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -35,6 +42,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -42,6 +50,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,6 +67,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.proyecto_evacuapp.ui.theme.AppBackground
+import com.example.proyecto_evacuapp.ui.theme.DangerRed
+import com.example.proyecto_evacuapp.ui.theme.DangerRedLight
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlue
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlueLight
 import com.example.proyecto_evacuapp.ui.theme.SafeGreen
@@ -74,206 +85,212 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 
-data class EmergencyCategory(
+data class EmergencyThreat(
     val name: String,
     val emoji: String,
-    val historicalRiskFactor: String,
-    val adaptiveCriteria: String
+    val historicalRiskNote: String
 )
 
-data class RouteOption(
+data class EvaluatedRoute(
     val id: Int,
     val title: String,
     val destination: String,
     val distance: String,
-    val time: String,
-    val risk: String,
+    val estimatedTime: String,
+    val riskLevel: String,
     val riskColor: Color,
-    val riskBackground: Color,
-    val routeColor: Color,
-    val reason: String,
+    val riskBg: Color,
+    val routeLineColor: Color,
+    val criteriaReason: String,
+    val isBlocked: Boolean,
     val coordinates: List<GeoPoint>
 )
 
 @Composable
-fun RoutesScreen(onSelectRoute: () -> Unit) {
-    var selectedEmergency by remember { mutableStateOf("Terremoto") }
-    var selectedRouteIndex by remember { mutableIntStateOf(0) }
+fun RoutesScreen(
+    mobilityMode: String,
+    onSelectRoute: () -> Unit,
+    onChangeMobility: (String) -> Unit
+) {
+    var selectedThreat by remember { mutableStateOf("Terremoto") }
+    var selectedRouteId by remember { mutableIntStateOf(0) }
 
-    val categories = remember {
-        listOf(
-            EmergencyCategory("Terremoto", "🌎", "Historial sísmico SENAPRED: riesgo por caída de muros y cables", "Prioriza vías abiertas evitando pasos bajo nivel"),
-            EmergencyCategory("Incendio", "🔥", "Historial CONAF: dispersión rápida de humo en vientos urbanos", "Busca áreas despejadas contra la dirección del viento"),
-            EmergencyCategory("Inundación", "🌊", "Historial lluvias Santiago: anegamiento en pasos bajo nivel y calzadas bajas", "Descarta pasos a desnivel y busca zonas elevadas"),
-            EmergencyCategory("Tsunami", "🌊", "Planes de evacuación SENAPRED: cota 30 metros sobre nivel del mar", "Evacúa horizontal y verticalmente hacia puntos seguros elevados"),
-            EmergencyCategory("Derrumbe", "🪨", "Registros SERNAGEOMIN: inestabilidad de taludes y quebradas", "Evita avenidas adyacentes a pendientes inestables"),
-            EmergencyCategory("Otra", "⚠️", "Registro histórico multiamenaza base urbana", "Optimiza por distancia y reporte de incidentes en tiempo real")
-        )
+    // Simulación del Modelo Bayesiano (Distribución Beta por Clúster)
+    // alpha = Confirmaciones ciudadanas | beta = Negaciones
+    var alphaVotes by remember { mutableDoubleStateOf(7.0) } // 7 personas confirmaron
+    var betaVotes by remember { mutableDoubleStateOf(1.0) }  // 1 persona negó
+
+    // Cálculo formal de la media de la distribución Beta: E[p] = alpha / (alpha + beta)
+    val betaConfidence = remember(alphaVotes, betaVotes) {
+        alphaVotes / (alphaVotes + betaVotes)
     }
+    val isIncidentVerified = betaConfidence >= 0.75 // Umbral de bloqueo >= 75%
 
-    val currentCategory = categories.first { it.name == selectedEmergency }
+    val mobilityModes = listOf("Vehículo", "A pie", "Bicicleta", "Movilidad reducida")
 
-    // Generador de grafos adaptativos según el tipo de emergencia seleccionada
-    val routesList = remember(selectedEmergency) {
-        when (selectedEmergency) {
-            "Terremoto" -> listOf(
-                RouteOption(
+    val threats = listOf(
+        EmergencyThreat("Terremoto", "🌎", "Historial sísmico: caída de postes y muros"),
+        EmergencyThreat("Incendio", "🔥", "Historial: avance de llamas y humo en calzada"),
+        EmergencyThreat("Inundación", "🌊", "Historial: anegamiento en pasos bajo nivel"),
+        EmergencyThreat("Tsunami", "🌊", "SENAPRED: evacuación sobre cota 30"),
+        EmergencyThreat("Derrumbe", "🪨", "SERNAGEOMIN: inestabilidad de laderas")
+    )
+
+    // Generación dinámica del grafo vial según Movilidad + Tipo de Amenaza + Validación Beta
+    val generatedRoutes = remember(mobilityMode, selectedThreat, isIncidentVerified) {
+        when (mobilityMode) {
+            "Vehículo" -> {
+                if (isIncidentVerified) {
+                    listOf(
+                        EvaluatedRoute(
+                            id = 0,
+                            title = "Ruta vehicular recomendada (Desvío)",
+                            destination = "Zona Segura: Autopista Central Norte",
+                            distance = "2,6 km",
+                            estimatedTime = "6 min (Auto)",
+                            riskLevel = "Bajo",
+                            riskColor = SafeGreen,
+                            riskBg = SafeGreenLight,
+                            routeLineColor = EvacuBlue, // Línea Azul
+                            criteriaReason = "Bloqueo en Av. Viel VERIFICADO por consenso ciudadano ($alphaVotes reportes). OSRM desvía por Av. Matta y Autopista.",
+                            isBlocked = false,
+                            coordinates = listOf(
+                                GeoPoint(-33.4672, -70.6576), // UBO Rondizzoni
+                                GeoPoint(-33.4660, -70.6550), // Av. Viel
+                                GeoPoint(-33.4610, -70.6540), // Av. Matta
+                                GeoPoint(-33.4580, -70.6580), // Enlace Autopista
+                                GeoPoint(-33.4550, -70.6620)  // Zona Segura vehicular
+                            )
+                        ),
+                        EvaluatedRoute(
+                            id = 1,
+                            title = "Ruta alternativa por calzada sur",
+                            destination = "Zona Segura: Caletera Sur",
+                            distance = "3,2 km",
+                            estimatedTime = "9 min (Auto)",
+                            riskLevel = "Muy bajo",
+                            riskColor = SafeGreen,
+                            riskBg = SafeGreenLight,
+                            routeLineColor = SafeGreen, // Línea Verde
+                            criteriaReason = "Vía vehicular secundaria con capacidad de flujo ante evacuación masiva.",
+                            isBlocked = false,
+                            coordinates = listOf(
+                                GeoPoint(-33.4672, -70.6576),
+                                GeoPoint(-33.4700, -70.6580),
+                                GeoPoint(-33.4730, -70.6610),
+                                GeoPoint(-33.4750, -70.6650)
+                            )
+                        )
+                    )
+                } else {
+                    listOf(
+                        EvaluatedRoute(
+                            id = 0,
+                            title = "Ruta directa por Av. Viel",
+                            destination = "Zona Segura: Parque O'Higgins",
+                            distance = "1,8 km",
+                            estimatedTime = "4 min (Auto)",
+                            riskLevel = "Medio",
+                            riskColor = WarningAmber,
+                            riskBg = WarningAmberLight,
+                            routeLineColor = EvacuBlue,
+                            criteriaReason = "Alerta pendiente de verificación. Vía transitable con precaución.",
+                            isBlocked = false,
+                            coordinates = listOf(
+                                GeoPoint(-33.4672, -70.6576),
+                                GeoPoint(-33.4650, -70.6560),
+                                GeoPoint(-33.4630, -70.6580)
+                            )
+                        )
+                    )
+                }
+            }
+            "Bicicleta" -> listOf(
+                EvaluatedRoute(
                     id = 0,
-                    title = "Ruta recomendada (Vía Amplia)",
-                    destination = "Explanada Parque O'Higgins",
-                    distance = "1,4 km",
-                    time = "11 min",
-                    risk = "Bajo",
+                    title = "Ruta ciclovía protegida",
+                    destination = "Zona Segura: Parque O'Higgins",
+                    distance = "1,6 km",
+                    estimatedTime = "7 min (Bici)",
+                    riskLevel = "Bajo",
                     riskColor = SafeGreen,
-                    riskBackground = SafeGreenLight,
-                    routeColor = EvacuBlue,
-                    reason = "Vía ancha despejada de cornisas y cableado aéreo según datos históricos sísmicos.",
+                    riskBg = SafeGreenLight,
+                    routeLineColor = EvacuBlue,
+                    criteriaReason = "Grafo prioriza ejes con ciclovías segregadas y ancho libre de escombros.",
+                    isBlocked = false,
+                    coordinates = listOf(
+                        GeoPoint(-33.4672, -70.6576),
+                        GeoPoint(-33.4670, -70.6590),
+                        GeoPoint(-33.4655, -70.6595),
+                        GeoPoint(-33.4640, -70.6610)
+                    )
+                )
+            )
+            "Movilidad reducida" -> listOf(
+                EvaluatedRoute(
+                    id = 0,
+                    title = "Ruta 100% Accesible y Nivelada",
+                    destination = "Explanada Parque O'Higgins",
+                    distance = "1,5 km",
+                    estimatedTime = "16 min (Silla de ruedas/Asistida)",
+                    riskLevel = "Muy bajo",
+                    riskColor = SafeGreen,
+                    riskBg = SafeGreenLight,
+                    routeLineColor = SafeGreen,
+                    criteriaReason = "Descarta pasarelas elevadas, escaleras y veredas angostas. Pendiente máxima 4%.",
+                    isBlocked = false,
+                    coordinates = listOf(
+                        GeoPoint(-33.4672, -70.6576),
+                        GeoPoint(-33.4675, -70.6585),
+                        GeoPoint(-33.4660, -70.6600),
+                        GeoPoint(-33.4645, -70.6615)
+                    )
+                )
+            )
+            else -> listOf( // "A pie" (Peatonal)
+                EvaluatedRoute(
+                    id = 0,
+                    title = "Ruta peatonal recomendada",
+                    destination = "Zona Segura: Parque O'Higgins",
+                    distance = "1,4 km",
+                    estimatedTime = "12 min (A pie)",
+                    riskLevel = "Bajo",
+                    riskColor = SafeGreen,
+                    riskBg = SafeGreenLight,
+                    routeLineColor = EvacuBlue,
+                    criteriaReason = "Vía peatonal directa evitando calzadas vehiculares congestionadas.",
+                    isBlocked = false,
                     coordinates = listOf(
                         GeoPoint(-33.4672, -70.6576),
                         GeoPoint(-33.4670, -70.6590),
                         GeoPoint(-33.4655, -70.6592),
-                        GeoPoint(-33.4645, -70.6605),
                         GeoPoint(-33.4638, -70.6610)
                     )
                 ),
-                RouteOption(
+                EvaluatedRoute(
                     id = 1,
-                    title = "Ruta alternativa segura",
-                    destination = "Parque Cousiño / Rondizzoni",
-                    distance = "1,8 km",
-                    time = "15 min",
-                    risk = "Muy bajo",
-                    riskColor = SafeGreen,
-                    riskBackground = SafeGreenLight,
-                    routeColor = SafeGreen,
-                    reason = "Circunvalación amplia sin estructuras de altura.",
-                    coordinates = listOf(
-                        GeoPoint(-33.4672, -70.6576),
-                        GeoPoint(-33.4685, -70.6575),
-                        GeoPoint(-33.4690, -70.6610),
-                        GeoPoint(-33.4675, -70.6625),
-                        GeoPoint(-33.4660, -70.6630)
-                    )
-                )
-            )
-            "Inundación" -> listOf(
-                RouteOption(
-                    id = 0,
-                    title = "Ruta adaptada a cota alta",
-                    destination = "Zona Elevada: Campus Rondizzoni",
-                    distance = "1,1 km",
-                    time = "9 min",
-                    risk = "Bajo",
-                    riskColor = SafeGreen,
-                    riskBackground = SafeGreenLight,
-                    routeColor = EvacuBlue,
-                    reason = "Evita pasos bajo nivel de Av. Matta propensos a anegamiento histórico.",
-                    coordinates = listOf(
-                        GeoPoint(-33.4672, -70.6576),
-                        GeoPoint(-33.4665, -70.6560),
-                        GeoPoint(-33.4650, -70.6555),
-                        GeoPoint(-33.4635, -70.6550)
-                    )
-                ),
-                RouteOption(
-                    id = 1,
-                    title = "Ruta por calles altas",
-                    destination = "Punto de Apoyo Beauchef",
-                    distance = "1,6 km",
-                    time = "13 min",
-                    risk = "Muy bajo",
-                    riskColor = SafeGreen,
-                    riskBackground = SafeGreenLight,
-                    routeColor = SafeGreen,
-                    reason = "Trazado sobre calzadas elevadas con drenaje operativo.",
-                    coordinates = listOf(
-                        GeoPoint(-33.4672, -70.6576),
-                        GeoPoint(-33.4680, -70.6590),
-                        GeoPoint(-33.4695, -70.6605),
-                        GeoPoint(-33.4710, -70.6620)
-                    )
-                )
-            )
-            "Incendio" -> listOf(
-                RouteOption(
-                    id = 0,
-                    title = "Ruta contra el viento",
-                    destination = "Zona Despejada: Parque O'Higgins",
-                    distance = "1,5 km",
-                    time = "12 min",
-                    risk = "Bajo",
-                    riskColor = SafeGreen,
-                    riskBackground = SafeGreenLight,
-                    routeColor = EvacuBlue,
-                    reason = "Grafo recalculado evitando zonas arboladas densas y dirección del humo.",
-                    coordinates = listOf(
-                        GeoPoint(-33.4672, -70.6576),
-                        GeoPoint(-33.4675, -70.6600),
-                        GeoPoint(-33.4660, -70.6620),
-                        GeoPoint(-33.4640, -70.6635)
-                    )
-                ),
-                RouteOption(
-                    id = 1,
-                    title = "Ruta secundaria por autopista",
-                    destination = "Acceso Autopista Central",
-                    distance = "1,9 km",
-                    time = "16 min",
-                    risk = "Medio",
-                    riskColor = WarningAmber,
-                    riskBackground = WarningAmberLight,
-                    routeColor = SafeGreen,
-                    reason = "Vía ancha con posibilidad de humo residual.",
-                    coordinates = listOf(
-                        GeoPoint(-33.4672, -70.6576),
-                        GeoPoint(-33.4690, -70.6570),
-                        GeoPoint(-33.4710, -70.6565),
-                        GeoPoint(-33.4730, -70.6560)
-                    )
-                )
-            )
-            else -> listOf(
-                RouteOption(
-                    id = 0,
-                    title = "Ruta estándar recomendada",
-                    destination = "Punto de Encuentro Oficial",
-                    distance = "1,3 km",
-                    time = "10 min",
-                    risk = "Bajo",
-                    riskColor = SafeGreen,
-                    riskBackground = SafeGreenLight,
-                    routeColor = EvacuBlue,
-                    reason = "Ponderación OSRM según menor tiempo y sin reportes de bloqueo activos.",
-                    coordinates = listOf(
-                        GeoPoint(-33.4672, -70.6576),
-                        GeoPoint(-33.4670, -70.6590),
-                        GeoPoint(-33.4655, -70.6592),
-                        GeoPoint(-33.4645, -70.6605)
-                    )
-                ),
-                RouteOption(
-                    id = 1,
-                    title = "Ruta alternativa de evacuación",
-                    destination = "Zona Segura Secundaria",
+                    title = "Ruta peatonal alternativa",
+                    destination = "Plaza Manuel Rodríguez",
                     distance = "1,7 km",
-                    time = "14 min",
-                    risk = "Muy bajo",
+                    estimatedTime = "15 min (A pie)",
+                    riskLevel = "Muy bajo",
                     riskColor = SafeGreen,
-                    riskBackground = SafeGreenLight,
-                    routeColor = SafeGreen,
-                    reason = "Ruta secundaria de contingencia.",
+                    riskBg = SafeGreenLight,
+                    routeLineColor = SafeGreen,
+                    criteriaReason = "Circunvalación amplia con sombra y veredas anchas.",
+                    isBlocked = false,
                     coordinates = listOf(
                         GeoPoint(-33.4672, -70.6576),
                         GeoPoint(-33.4685, -70.6575),
                         GeoPoint(-33.4690, -70.6610),
-                        GeoPoint(-33.4675, -70.6625)
+                        GeoPoint(-33.4660, -70.6630)
                     )
                 )
             )
         }
     }
 
-    val currentRoute = routesList.getOrElse(selectedRouteIndex) { routesList.first() }
+    val activeRoute = generatedRoutes.getOrElse(selectedRouteId) { generatedRoutes.first() }
 
     Column(
         modifier = Modifier
@@ -281,55 +298,71 @@ fun RoutesScreen(onSelectRoute: () -> Unit) {
             .statusBarsPadding()
             .background(AppBackground)
     ) {
-        // 1. TÍTULO Y SELECTOR DE AMENAZA
+        // 1. SELECTOR DE MODO DE TRANSPORTE
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
-            Text(
-                text = "Rutas adaptativas",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = TextPrimary
-            )
-            Text(
-                text = "Ponderación vial según amenaza y datos históricos SENAPRED.",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Rutas de evacuación",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+                // Indicador de modo activo
+                Surface(
+                    color = EvacuBlueLight,
+                    shape = RoundedCornerShape(50)
+                ) {
+                    Text(
+                        text = "Modo: $mobilityMode",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        color = EvacuBlue,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Selector horizontal de tipo de emergencia
+            // Selector dinámico de movilidad
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
             ) {
-                items(categories) { category ->
+                items(mobilityModes) { mode ->
+                    val icon = when (mode) {
+                        "Vehículo" -> Icons.Default.DirectionsCar
+                        "Bicicleta" -> Icons.Default.DirectionsBike
+                        "Movilidad reducida" -> Icons.Default.WheelchairPickup
+                        else -> Icons.Default.DirectionsWalk
+                    }
                     FilterChip(
-                        selected = selectedEmergency == category.name,
+                        selected = mobilityMode == mode,
                         onClick = {
-                            selectedEmergency = category.name
-                            selectedRouteIndex = 0
+                            onChangeMobility(mode)
+                            selectedRouteId = 0
                         },
-                        label = {
-                            Text(
-                                text = "${category.emoji} ${category.name}",
-                                fontWeight = FontWeight.SemiBold
-                            )
+                        leadingIcon = {
+                            Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(16.dp))
                         },
+                        label = { Text(text = mode, style = MaterialTheme.typography.labelSmall) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = EvacuBlue,
                             selectedLabelColor = Color.White,
-                            labelColor = TextPrimary
+                            selectedLeadingIconColor = Color.White
                         )
                     )
                 }
             }
         }
 
-        // 2. MAPA SUPERIOR OSM CON TRAZADO DE LÍNEA
+        // 2. MAPA CON POLYLINE EN TIEMPO REAL
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(230.dp)
+                .height(210.dp)
                 .padding(horizontal = 16.dp, vertical = 4.dp)
         ) {
             Card(
@@ -337,64 +370,111 @@ fun RoutesScreen(onSelectRoute: () -> Unit) {
                 modifier = Modifier.fillMaxSize(),
                 elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
             ) {
-                RouteMapOSM(route = currentRoute)
+                RouteMapOSM(route = activeRoute)
             }
         }
 
-        // 3. TARJETA INFORMATIVA DE CRITERIO HISTÓRICO ADAPTATIVO
+        // 3. PANEL DE VALIDACIÓN BAYESIANA (DISTRIBUCIÓN BETA)
         Card(
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = EvacuBlueLight),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isIncidentVerified) DangerRedLight else WarningAmberLight
+            ),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp)
         ) {
-            Row(
-                modifier = Modifier.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(imageVector = Icons.Default.History, contentDescription = null, tint = EvacuBlue)
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = "Criterio adaptativo: ${currentCategory.name}",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = EvacuBlue
-                    )
-                    Text(
-                        text = currentCategory.adaptiveCriteria,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextPrimary
-                    )
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (isIncidentVerified) Icons.Default.Warning else Icons.Default.AutoGraph,
+                            contentDescription = null,
+                            tint = if (isIncidentVerified) DangerRed else WarningAmber
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isIncidentVerified) "Bloqueo vial VERIFICADO" else "Reporte en validación",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isIncidentVerified) DangerRed else WarningAmber
+                        )
+                    }
+
+                    // Porcentaje de confianza Beta: alpha / (alpha + beta)
+                    Surface(
+                        color = if (isIncidentVerified) DangerRed else WarningAmber,
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Text(
+                            text = "Confianza Beta: ${(betaConfidence * 100).toInt()}%",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = "Consenso comunitario: ${alphaVotes.toInt()} confirmaciones (α) vs ${betaVotes.toInt()} descartes (β). Umbral de desvío: 75%.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextPrimary
+                )
+
+                // Botones interactivos para probar el impacto de los reportes en vivo
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = "¿Estás en el lugar?", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    IconButton(
+                        onClick = { alphaVotes += 1.0 },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.ThumbUp, contentDescription = "Confirmar bloqueo", tint = SafeGreen)
+                    }
+                    IconButton(
+                        onClick = { betaVotes += 1.0 },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.ThumbDown, contentDescription = "Vía libre", tint = DangerRed)
+                    }
                 }
             }
         }
 
-        // 4. LISTA DE ALTERNATIVAS DE RUTA
+        // 4. LISTA DE TARJETAS DE RUTA ADAPTADAS AL MODO Y RIESGO
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            routesList.forEachIndexed { index, route ->
+            generatedRoutes.forEachIndexed { index, route ->
                 SelectableRouteCard(
                     route = route,
-                    isSelected = selectedRouteIndex == index,
-                    onSelect = { selectedRouteIndex = index },
+                    isSelected = selectedRouteId == index,
+                    onSelect = { selectedRouteId = index },
                     onStartNavigation = onSelectRoute
                 )
             }
-
             Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
 
 @Composable
-fun RouteMapOSM(route: RouteOption) {
+fun RouteMapOSM(route: EvaluatedRoute) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -404,7 +484,7 @@ fun RouteMapOSM(route: RouteOption) {
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
             isTilesScaledToDpi = true
-            controller.setZoom(16.2)
+            controller.setZoom(16.0)
         }
 
         val start = Marker(map).apply {
@@ -438,7 +518,7 @@ fun RouteMapOSM(route: RouteOption) {
         val end = endMarker as Marker
 
         line.setPoints(route.coordinates)
-        line.outlinePaint.color = route.routeColor.toArgb()
+        line.outlinePaint.color = route.routeLineColor.toArgb()
 
         if (route.coordinates.isNotEmpty()) {
             start.position = route.coordinates.first()
@@ -447,7 +527,7 @@ fun RouteMapOSM(route: RouteOption) {
 
             val centerLat = (route.coordinates.first().latitude + route.coordinates.last().latitude) / 2
             val centerLng = (route.coordinates.first().longitude + route.coordinates.last().longitude) / 2
-            map.controller.animateTo(GeoPoint(centerLat, centerLng), 16.0, 500L)
+            map.controller.animateTo(GeoPoint(centerLat, centerLng), 15.8, 400L)
         }
         map.invalidate()
     }
@@ -474,7 +554,7 @@ fun RouteMapOSM(route: RouteOption) {
 
 @Composable
 fun SelectableRouteCard(
-    route: RouteOption,
+    route: EvaluatedRoute,
     isSelected: Boolean,
     onSelect: () -> Unit,
     onStartNavigation: () -> Unit
@@ -486,7 +566,7 @@ fun SelectableRouteCard(
         ),
         border = BorderStroke(
             width = if (isSelected) 2.dp else 1.dp,
-            color = if (isSelected) route.routeColor else Color(0xFFE2E8F0)
+            color = if (isSelected) route.routeLineColor else Color(0xFFE2E8F0)
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = if (isSelected) 4.dp else 1.dp),
         modifier = Modifier
@@ -494,20 +574,20 @@ fun SelectableRouteCard(
             .clickable { onSelect() }
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
-                    color = route.routeColor,
+                    color = route.routeLineColor,
                     shape = CircleShape,
-                    modifier = Modifier.size(14.dp)
+                    modifier = Modifier.size(12.dp)
                 ) {}
 
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -525,12 +605,12 @@ fun SelectableRouteCard(
 
                 if (isSelected) {
                     Surface(
-                        color = route.routeColor,
+                        color = route.routeLineColor,
                         shape = RoundedCornerShape(50)
                     ) {
                         Text(
-                            text = "SELECCIONADA",
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            text = "ACTIVA",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                             color = Color.White,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold
@@ -540,23 +620,23 @@ fun SelectableRouteCard(
             }
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${route.time} · ${route.distance}",
+                    text = "${route.estimatedTime} · ${route.distance}",
                     style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
+                    fontWeight = FontWeight.Bold,
                     color = TextPrimary
                 )
 
                 Surface(
-                    color = route.riskBackground,
+                    color = route.riskBg,
                     shape = RoundedCornerShape(50)
                 ) {
                     Text(
-                        text = "Riesgo: ${route.risk}",
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        text = "Riesgo: ${route.riskLevel}",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                         color = route.riskColor,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold
@@ -565,7 +645,7 @@ fun SelectableRouteCard(
             }
 
             Text(
-                text = route.reason,
+                text = route.criteriaReason,
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )
@@ -575,19 +655,16 @@ fun SelectableRouteCard(
                     onClick = onStartNavigation,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp),
-                    shape = RoundedCornerShape(14.dp),
+                        .height(44.dp),
+                    shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (route.id == 0) EvacuBlue else SafeGreen,
                         contentColor = Color.White
                     )
                 ) {
-                    Icon(imageVector = Icons.Default.Navigation, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "INICIAR EVACUACIÓN",
-                        fontWeight = FontWeight.Bold
-                    )
+                    Icon(imageVector = Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = "INICIAR EVACUACIÓN", fontWeight = FontWeight.Bold)
                 }
             }
         }
