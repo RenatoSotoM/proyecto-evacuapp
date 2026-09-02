@@ -1,5 +1,5 @@
 package com.example.proyecto_evacuapp.ui.components
-
+/* CAMBIOS BASE 1 DESEPTIEMBRE */
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
