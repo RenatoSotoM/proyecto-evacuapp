@@ -29,8 +29,6 @@ import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Navigation
-import androidx.compose.material.icons.filled.ThumbDown
-import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WheelchairPickup
 import androidx.compose.material3.Button
@@ -41,7 +39,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -49,7 +46,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,6 +61,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
+import com.example.proyecto_evacuapp.ui.components.IncidentType
 import com.example.proyecto_evacuapp.ui.components.OsrmRoutingService
 import com.example.proyecto_evacuapp.ui.theme.AppBackground
 import com.example.proyecto_evacuapp.ui.theme.DangerRed
@@ -100,8 +98,7 @@ data class RealStreetRoute(
     val endPoint: GeoPoint,
     val polylinePoints: List<GeoPoint> = emptyList(),
     val isLoading: Boolean = true,
-    val routingError: String? = null,
-    val affectedSegmentId: String? = null
+    val routingError: String? = null
 )
 
 @Composable
@@ -113,21 +110,6 @@ fun RoutesScreen(
     var selectedRouteId by remember { mutableIntStateOf(0) }
     var selectedLayerName by remember { mutableStateOf("Estándar") }
 
-    /*
-     * Modelo Beta por consenso:
-     * α = confirmaciones de usuarios cercanos
-     * β = descartes / reportes de vía despejada
-     */
-    var alphaVotes by remember { mutableDoubleStateOf(7.0) }
-    var betaVotes by remember { mutableDoubleStateOf(1.0) }
-
-    val betaConfidence = remember(alphaVotes, betaVotes) {
-        val total = alphaVotes + betaVotes
-        if (total <= 0.0) 0.0 else alphaVotes / total
-    }
-
-    val isIncidentVerified = betaConfidence >= 0.75
-
     val mobilityModes = listOf(
         "Vehículo",
         "A pie",
@@ -136,10 +118,34 @@ fun RoutesScreen(
     )
 
     /*
-     * Origen/destinos de demostración.
+     * Estado compartido que viene desde ReportsScreen.
      *
-     * En la siguiente iteración, uboStart debe reemplazarse por GPS
-     * y los destinos deben cargarse desde zonas seguras locales.
+     * IncidentSharedState usa mutableStateListOf, por lo que la pantalla
+     * se recompone cuando un reporte pasa de PENDING a VERIFIED.
+     */
+    val sharedIncidents = IncidentSharedState.incidents
+
+    val verifiedRoadIncidents = sharedIncidents.filter { incident ->
+        incident.isVerified &&
+                incident.type in setOf(
+            IncidentType.BLOQUEO_VIAL,
+            IncidentType.INUNDACION,
+            IncidentType.DERRUMBE,
+            IncidentType.ACCIDENTE,
+            IncidentType.RUTA_INACCESIBLE
+        )
+    }
+
+    val verifiedBlockedSegments = IncidentSharedState
+        .verifiedBlockedSegmentIds()
+
+    val hasVerifiedRoadBlock = verifiedBlockedSegments.isNotEmpty()
+
+    /*
+     * Origen y zonas seguras de demostración.
+     *
+     * Próxima mejora: reemplazar uboStart por ubicación GPS real y
+     * cargar zonas seguras desde datos offline persistentes.
      */
     val uboStart = remember {
         GeoPoint(-33.4672, -70.6576)
@@ -154,20 +160,22 @@ fun RoutesScreen(
     }
 
     /*
-     * Estas rutas contienen solamente metadatos, origen y destino.
+     * Las rutas base contienen solo origen/destino y metadata.
      *
-     * polylinePoints se deja vacío intencionalmente:
-     * la geometría se solicita a OsrmRoutingService y debe devolver
-     * puntos reales de la red vial OpenStreetMap.
+     * La geometría real será devuelta por OsrmRoutingService y nunca se
+     * generan puntos manuales ni una diagonal origen -> destino.
      */
-    val baseRoutes = remember(mobilityMode, isIncidentVerified) {
+    val baseRoutes = remember(
+        mobilityMode,
+        verifiedBlockedSegments
+    ) {
         when (mobilityMode) {
             "Vehículo" -> {
-                if (isIncidentVerified) {
+                if (hasVerifiedRoadBlock) {
                     listOf(
                         RealStreetRoute(
                             id = 0,
-                            title = "Ruta vehicular recomendada",
+                            title = "Ruta vehicular recomendada (Desvío)",
                             destination = "Zona Segura: Explanada Norte",
                             distance = "Calculando...",
                             estimatedTime = "Calculando...",
@@ -175,10 +183,9 @@ fun RoutesScreen(
                             riskColor = SafeGreen,
                             riskBg = SafeGreenLight,
                             routeLineColor = EvacuBlue,
-                            criteriaReason = "Bloqueo vial verificado por consenso. El motor de rutas evita el tramo afectado y busca un desvío por calles habilitadas.",
+                            criteriaReason = "Bloqueo vial verificado por consenso comunitario. Se evita el tramo afectado y se calcula un desvío por calles habilitadas.",
                             startPoint = uboStart,
-                            endPoint = safeParqueOhiggins,
-                            affectedSegmentId = "av-viel-norte"
+                            endPoint = safeParqueOhiggins
                         ),
                         RealStreetRoute(
                             id = 1,
@@ -190,7 +197,7 @@ fun RoutesScreen(
                             riskColor = SafeGreen,
                             riskBg = SafeGreenLight,
                             routeLineColor = SafeGreen,
-                            criteriaReason = "Ruta alternativa para distribuir el flujo vehicular durante la evacuación.",
+                            criteriaReason = "Alternativa vehicular para distribuir el flujo y evitar el sector reportado.",
                             startPoint = uboStart,
                             endPoint = safeExplanadaSur
                         )
@@ -207,10 +214,9 @@ fun RoutesScreen(
                             riskColor = WarningAmber,
                             riskBg = WarningAmberLight,
                             routeLineColor = EvacuBlue,
-                            criteriaReason = "Existe un reporte ciudadano en validación. La ruta se mantiene habilitada mientras no alcance el umbral de bloqueo.",
+                            criteriaReason = "No hay bloqueos viales verificados por la comunidad para este trayecto.",
                             startPoint = uboStart,
-                            endPoint = safeParqueOhiggins,
-                            affectedSegmentId = "av-viel-norte"
+                            endPoint = safeParqueOhiggins
                         )
                     )
                 }
@@ -227,7 +233,7 @@ fun RoutesScreen(
                     riskColor = SafeGreen,
                     riskBg = SafeGreenLight,
                     routeLineColor = EvacuBlue,
-                    criteriaReason = "Perfil ciclista: busca vías permitidas, ciclovías y calles de menor exposición al tránsito.",
+                    criteriaReason = "Perfil ciclista: el motor busca caminos permitidos para bicicleta y vías de menor exposición.",
                     startPoint = uboStart,
                     endPoint = safeParqueOhiggins
                 )
@@ -244,7 +250,7 @@ fun RoutesScreen(
                     riskColor = SafeGreen,
                     riskBg = SafeGreenLight,
                     routeLineColor = SafeGreen,
-                    criteriaReason = "Perfil accesible: debe evitar escaleras, pasarelas, pendientes y segmentos no aptos según datos disponibles.",
+                    criteriaReason = "Perfil accesible: actualmente usa ruteo peatonal. La siguiente fase aplicará filtros de escaleras, pendiente y superficie desde datos locales.",
                     startPoint = uboStart,
                     endPoint = safeParqueOhiggins
                 )
@@ -261,7 +267,7 @@ fun RoutesScreen(
                     riskColor = SafeGreen,
                     riskBg = SafeGreenLight,
                     routeLineColor = EvacuBlue,
-                    criteriaReason = "Perfil peatonal: utiliza la red de calles y caminos permitidos para desplazamiento a pie.",
+                    criteriaReason = "Perfil peatonal: utiliza caminos permitidos para desplazamiento a pie hacia una zona segura.",
                     startPoint = uboStart,
                     endPoint = safeParqueOhiggins
                 ),
@@ -275,7 +281,7 @@ fun RoutesScreen(
                     riskColor = SafeGreen,
                     riskBg = SafeGreenLight,
                     routeLineColor = SafeGreen,
-                    criteriaReason = "Alternativa para usar en caso de congestión, bloqueo o cambio de condiciones en la ruta principal.",
+                    criteriaReason = "Alternativa peatonal disponible si la ruta principal está congestionada o cambia la condición de seguridad.",
                     startPoint = uboStart,
                     endPoint = safeExplanadaSur
                 )
@@ -283,17 +289,13 @@ fun RoutesScreen(
         }
     }
 
-    /*
-     * Las rutas calculadas empiezan sin geometría.
-     * OsrmRoutingService completa polylinePoints con la geometría real.
-     */
     var calculatedRoutes by remember(baseRoutes) {
         mutableStateOf(baseRoutes)
     }
 
     /*
-     * Si cambia el perfil o el conjunto de rutas,
-     * evita índices inválidos al seleccionar una tarjeta.
+     * Al cambiar entre perfiles o cambiar la cantidad de rutas,
+     * evita índices fuera de rango.
      */
     LaunchedEffect(baseRoutes.size) {
         if (selectedRouteId >= baseRoutes.size) {
@@ -302,13 +304,15 @@ fun RoutesScreen(
     }
 
     /*
-     * Cálculo de geometrías reales.
-     *
-     * No se genera fallback origen -> destino.
-     * Si el servicio falla, la ruta queda sin polylinePoints y se muestra
-     * un mensaje en pantalla, evitando trazos que corten edificios.
+     * Consulta temporal online para obtener la geometría real sobre las
+     * calles OSM. Cuando se integre BRouter/GraphHopper local, solo se
+     * reemplaza OsrmRoutingService, sin modificar la UI.
      */
-    LaunchedEffect(baseRoutes, mobilityMode, isIncidentVerified) {
+    LaunchedEffect(
+        baseRoutes,
+        mobilityMode,
+        verifiedBlockedSegments
+    ) {
         calculatedRoutes = baseRoutes.map { route ->
             val result = OsrmRoutingService.fetchRealStreetRoute(
                 start = route.startPoint,
@@ -327,8 +331,7 @@ fun RoutesScreen(
     }
 
     val activeRoute = calculatedRoutes.getOrElse(selectedRouteId) {
-        calculatedRoutes.firstOrNull()
-            ?: baseRoutes.first()
+        calculatedRoutes.firstOrNull() ?: baseRoutes.first()
     }
 
     Column(
@@ -365,9 +368,9 @@ fun RoutesScreen(
                             horizontal = 10.dp,
                             vertical = 4.dp
                         ),
-                        color = EvacuBlue,
                         style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = EvacuBlue
                     )
                 }
             }
@@ -462,7 +465,7 @@ fun RoutesScreen(
 
             if (activeRoute.isLoading) {
                 Surface(
-                    color = SurfaceWhite.copy(alpha = 0.92f),
+                    color = SurfaceWhite.copy(alpha = 0.94f),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -503,7 +506,7 @@ fun RoutesScreen(
         Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(
-                containerColor = if (isIncidentVerified) {
+                containerColor = if (hasVerifiedRoadBlock) {
                     DangerRedLight
                 } else {
                     WarningAmberLight
@@ -528,13 +531,13 @@ fun RoutesScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = if (isIncidentVerified) {
+                            imageVector = if (hasVerifiedRoadBlock) {
                                 Icons.Default.Warning
                             } else {
                                 Icons.Default.AutoGraph
                             },
                             contentDescription = null,
-                            tint = if (isIncidentVerified) {
+                            tint = if (hasVerifiedRoadBlock) {
                                 DangerRed
                             } else {
                                 WarningAmber
@@ -544,14 +547,14 @@ fun RoutesScreen(
                         Spacer(modifier = Modifier.width(8.dp))
 
                         Text(
-                            text = if (isIncidentVerified) {
-                                "Bloqueo vial verificado"
+                            text = if (hasVerifiedRoadBlock) {
+                                "Incidente verificado: ruta recalculada"
                             } else {
-                                "Reporte en validación"
+                                "Sin bloqueos viales verificados"
                             },
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
-                            color = if (isIncidentVerified) {
+                            color = if (hasVerifiedRoadBlock) {
                                 DangerRed
                             } else {
                                 WarningAmber
@@ -560,7 +563,7 @@ fun RoutesScreen(
                     }
 
                     Surface(
-                        color = if (isIncidentVerified) {
+                        color = if (hasVerifiedRoadBlock) {
                             DangerRed
                         } else {
                             WarningAmber
@@ -568,10 +571,14 @@ fun RoutesScreen(
                         shape = RoundedCornerShape(50)
                     ) {
                         Text(
-                            text = "Confianza: ${(betaConfidence * 100).toInt()}%",
+                            text = if (hasVerifiedRoadBlock) {
+                                "${verifiedRoadIncidents.size} bloqueo(s)"
+                            } else {
+                                "Sin desvíos"
+                            },
                             modifier = Modifier.padding(
                                 horizontal = 8.dp,
-                                vertical = 2.dp
+                                vertical = 3.dp
                             ),
                             color = Color.White,
                             style = MaterialTheme.typography.labelSmall,
@@ -580,57 +587,19 @@ fun RoutesScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(5.dp))
 
                 Text(
-                    text = "Consenso: ${alphaVotes.toInt()} confirmaciones (α) y " +
-                            "${betaVotes.toInt()} descartes (β). " +
-                            "Umbral de desvío: 75%.",
+                    text = if (hasVerifiedRoadBlock) {
+                        "El consenso comunitario verificó un incidente y el sistema selecciona rutas alternativas. " +
+                                "Segmentos bloqueados: ${verifiedBlockedSegments.joinToString()}."
+                    } else {
+                        "Los reportes de la pestaña Reportes modificarán la ruta solo cuando alcancen " +
+                                "una confianza Beta igual o superior a 75%."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = TextPrimary
                 )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Simular reporte:",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary
-                    )
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    IconButton(
-                        onClick = {
-                            alphaVotes += 1.0
-                        },
-                        modifier = Modifier.size(26.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ThumbUp,
-                            contentDescription = "Confirmar bloqueo",
-                            tint = SafeGreen
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            betaVotes += 1.0
-                        },
-                        modifier = Modifier.size(26.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ThumbDown,
-                            contentDescription = "Indicar vía despejada",
-                            tint = DangerRed
-                        )
-                    }
-                }
             }
         }
 
@@ -708,17 +677,9 @@ fun RealStreetRouteMapOSM(
         val map = mapView as MapView
 
         when (layerName) {
-            "Topográfico" -> {
-                map.setTileSource(TileSourceFactory.OpenTopo)
-            }
-
-            "Transporte" -> {
-                map.setTileSource(TileSourceFactory.PUBLIC_TRANSPORT)
-            }
-
-            else -> {
-                map.setTileSource(TileSourceFactory.MAPNIK)
-            }
+            "Topográfico" -> map.setTileSource(TileSourceFactory.OpenTopo)
+            "Transporte" -> map.setTileSource(TileSourceFactory.PUBLIC_TRANSPORT)
+            else -> map.setTileSource(TileSourceFactory.MAPNIK)
         }
 
         map.invalidate()
@@ -735,11 +696,8 @@ fun RealStreetRouteMapOSM(
         end.title = route.destination
 
         /*
-         * Regla crítica:
-         *
-         * Solo se dibuja la polilínea si OSRM entregó dos o más puntos
-         * de geometría real. No se usa listOf(origen, destino), porque
-         * eso dibujaría una diagonal que no representa una calle.
+         * Solo se dibuja si OSRM devolvió dos o más coordenadas reales.
+         * No se construye nunca una diagonal artificial de origen a destino.
          */
         if (route.polylinePoints.size >= 2) {
             line.setPoints(route.polylinePoints)
@@ -927,7 +885,11 @@ fun SelectableRealRouteCard(
                 )
             }
 
-            if (isSelected && !route.isLoading && route.polylinePoints.size >= 2) {
+            if (
+                isSelected &&
+                !route.isLoading &&
+                route.polylinePoints.size >= 2
+            ) {
                 Button(
                     onClick = onStartNavigation,
                     modifier = Modifier
