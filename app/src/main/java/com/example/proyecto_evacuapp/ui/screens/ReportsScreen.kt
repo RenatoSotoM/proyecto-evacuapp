@@ -1,4 +1,5 @@
 package com.example.proyecto_evacuapp.ui.screens
+// Cambios nuevos de reportes e incidente
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
