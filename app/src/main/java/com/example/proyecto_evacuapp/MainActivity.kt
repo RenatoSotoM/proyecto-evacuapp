@@ -1,8 +1,5 @@
 package com.example.proyecto_evacuapp
 
-import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
-import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
-import com.example.proyecto_evacuapp.utils.LocationHelper
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -34,6 +31,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
+import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
 import com.example.proyecto_evacuapp.ui.screens.ActiveNavigationScreen
 import com.example.proyecto_evacuapp.ui.screens.AlertsScreen
 import com.example.proyecto_evacuapp.ui.screens.EmergencyActiveScreen
@@ -53,6 +52,7 @@ import com.example.proyecto_evacuapp.ui.theme.ProyectoevacuappTheme
 import com.example.proyecto_evacuapp.ui.theme.SurfaceWhite
 import com.example.proyecto_evacuapp.ui.theme.TextSecondary
 import org.osmdroid.config.Configuration
+import org.osmdroid.util.GeoPoint
 import java.io.File
 
 class MainActivity : ComponentActivity() {
@@ -91,7 +91,11 @@ fun EvacuAppApp() {
     var currentFlow by remember { mutableStateOf(ScreenFlow.SPLASH) }
     var selectedEmergency by remember { mutableStateOf("Terremoto") }
 
-    // Perfil de movilidad y acompañantes seleccionado en el onboarding/setup
+    // 🟢 ESTADOS AGREGADOS PARA GUARDAR LA ZONA SEGURA SELECCIONADA
+    var selectedDestinationName by remember { mutableStateOf("Zona Segura") }
+    var selectedDestinationPoint by remember { mutableStateOf(GeoPoint(-33.5925, -70.7045)) }
+
+    // Perfil de movilidad y acompañantes seleccionado en onboarding/setup
     var userMobilityProfile by remember { mutableStateOf("Vehículo") }
     var userCompanions by remember { mutableStateOf(setOf("Solo")) }
 
@@ -119,10 +123,18 @@ fun EvacuAppApp() {
         )
         ScreenFlow.EMERGENCY_ACTIVE -> EmergencyActiveScreen(
             emergencyType = selectedEmergency,
-            onStartNavigation = { currentFlow = ScreenFlow.ACTIVE_NAVIGATION },
-            onBack = { currentFlow = ScreenFlow.MAIN_TABS }
+            onStartNavigation = { destinationName, destinationPoint ->
+                // 🟢 SE GUARDAN LOS DATOS DEL DESTINO Y SE CAMBIA EL FLUJO
+                selectedDestinationName = destinationName
+                selectedDestinationPoint = destinationPoint
+                currentFlow = ScreenFlow.ACTIVE_NAVIGATION
+            },
+            onBack = { currentFlow = ScreenFlow.EMERGENCY_SELECT }
         )
         ScreenFlow.ACTIVE_NAVIGATION -> ActiveNavigationScreen(
+            destinationName = selectedDestinationName,
+            destinationPoint = selectedDestinationPoint,
+            mobilityMode = userMobilityProfile,
             onFinish = { currentFlow = ScreenFlow.MAIN_TABS }
         )
     }
@@ -137,7 +149,6 @@ fun MainTabsContainer(
     onChangeMobility: (String) -> Unit
 ) {
     var selectedTabIndex by remember { mutableIntStateOf(0) }
-
     val tabs = listOf(
         BottomNavTab("Mapa", Icons.Default.Map),
         BottomNavTab("Rutas", Icons.Default.Route),
@@ -145,7 +156,6 @@ fun MainTabsContainer(
         BottomNavTab("Alertas", Icons.Default.Notifications),
         BottomNavTab("Perfil", Icons.Default.Person)
     )
-
     Scaffold(
         containerColor = AppBackground,
         bottomBar = {
@@ -205,7 +215,5 @@ fun MainTabsContainer(
 @Preview(showBackground = true, showSystemUi = true)
 @Composable
 fun EvacuAppAppPreview() {
-    ProyectoevacuappTheme {
-        EvacuAppApp()
-    }
+    ProyectoevacuappTheme { EvacuAppApp() }
 }
