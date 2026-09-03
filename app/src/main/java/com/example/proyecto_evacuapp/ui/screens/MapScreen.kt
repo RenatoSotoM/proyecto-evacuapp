@@ -1,5 +1,6 @@
 package com.example.proyecto_evacuapp.ui.screens
-
+// Funcionamiento de rutas en tiempo real y alternativa
+import com.example.proyecto_evacuapp.ui.components.UserLocationState
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
@@ -63,6 +64,7 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import org.osmdroid.util.GeoPoint
 
 @SuppressLint("MissingPermission")
 @Composable
@@ -82,12 +84,17 @@ fun MapScreen(onFindRoute: () -> Unit) {
     }
 
     // Configuración de suscripción periódica a la señal GPS
+    // Configuración de suscripción periódica a la señal GPS
     val locationCallback = remember {
         object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let { location ->
                     currentLatitude = location.latitude
                     currentLongitude = location.longitude
+
+                    // ACTUALIZA EL ESTADO GLOBAL CON LA UBICACIÓN REAL (RONDIZZONI)
+                    UserLocationState.currentLocation =
+                        GeoPoint(location.latitude, location.longitude)
                 }
             }
         }
@@ -100,6 +107,10 @@ fun MapScreen(onFindRoute: () -> Unit) {
                     if (location != null) {
                         currentLatitude = location.latitude
                         currentLongitude = location.longitude
+
+                        // ACTUALIZA EL ESTADO GLOBAL EN BÚSQUEDA MANUAL
+                        UserLocationState.currentLocation = GeoPoint(location.latitude, location.longitude)
+
                         recenterTrigger++
                         Toast.makeText(context, "Ubicación GPS sincronizada", Toast.LENGTH_SHORT).show()
                     }

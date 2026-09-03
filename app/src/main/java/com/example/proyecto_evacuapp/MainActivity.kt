@@ -2,7 +2,7 @@ package com.example.proyecto_evacuapp
 
 import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
 import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
-
+import com.example.proyecto_evacuapp.utils.LocationHelper
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
