@@ -1,5 +1,7 @@
 package com.example.proyecto_evacuapp.ui.components
-
+// Centralizado funcional en ruta
+import android.annotation.SuppressLint
+import android.view.MotionEvent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -17,11 +19,14 @@ import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 
+@SuppressLint("ClickableViewAccessibility")
 @Composable
 fun MapViewOSM(
     modifier: Modifier = Modifier,
     latitude: Double?,
     longitude: Double?,
+    isTrackingUser: Boolean = true,
+    onMapTouched: () -> Unit = {},
     zoomLevel: Double = 16.5,
     recenterTrigger: Int = 0
 ) {
@@ -36,6 +41,14 @@ fun MapViewOSM(
             isTilesScaledToDpi = true
             controller.setZoom(zoomLevel)
             overlays.clear()
+
+            // 🟢 INTERCEPTA EL GESTO TÁCTIL PARA APAGAR EL SEGUIMIENTO AUTOMÁTICO
+            setOnTouchListener { _, event ->
+                if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_MOVE) {
+                    onMapTouched()
+                }
+                false // Retorna false para que osmdroid siga procesando los gestos de arrastrar y zoom
+            }
         }
 
         val marker = Marker(map).apply {
@@ -48,12 +61,24 @@ fun MapViewOSM(
         Pair(map, marker)
     }
 
-    // Centrado dinámico en la posición real emitida por el dispositivo
-    LaunchedEffect(latitude, longitude, recenterTrigger) {
+    // 🟢 Actualiza la posición del marcador siempre, pero solo mueve la cámara si isTrackingUser es true
+    LaunchedEffect(latitude, longitude, isTrackingUser) {
         if (latitude != null && longitude != null) {
             val userLocation = GeoPoint(latitude, longitude)
             userMarker.position = userLocation
             userMarker.isEnabled = true
+
+            if (isTrackingUser) {
+                mapView.controller.animateTo(userLocation, zoomLevel, 800L)
+            }
+            mapView.invalidate()
+        }
+    }
+
+    // 🟢 Fuerza el recentrado de la cámara cuando se presiona explícitamente el botón (recenterTrigger)
+    LaunchedEffect(recenterTrigger) {
+        if (recenterTrigger > 0 && latitude != null && longitude != null) {
+            val userLocation = GeoPoint(latitude, longitude)
             mapView.controller.animateTo(userLocation, zoomLevel, 800L)
             mapView.invalidate()
         }

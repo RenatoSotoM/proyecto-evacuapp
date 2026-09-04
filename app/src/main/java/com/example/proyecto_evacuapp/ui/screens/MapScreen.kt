@@ -1,4 +1,5 @@
 package com.example.proyecto_evacuapp.ui.screens
+
 // Funcionamiento de rutas en tiempo real y alternativa
 import com.example.proyecto_evacuapp.ui.components.UserLocationState
 import android.Manifest
@@ -38,7 +39,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -72,6 +72,9 @@ fun MapScreen(onFindRoute: () -> Unit) {
     val context = LocalContext.current
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
+    // 🟢 ESTADO DE SEGUIMIENTO DE MAPA
+    var isTrackingUser by remember { mutableStateOf(true) }
+
     // Coordenadas emitidas en tiempo real por el sensor GPS del dispositivo
     var currentLatitude by remember { mutableStateOf<Double?>(null) }
     var currentLongitude by remember { mutableStateOf<Double?>(null) }
@@ -84,7 +87,6 @@ fun MapScreen(onFindRoute: () -> Unit) {
     }
 
     // Configuración de suscripción periódica a la señal GPS
-    // Configuración de suscripción periódica a la señal GPS
     val locationCallback = remember {
         object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
@@ -92,7 +94,7 @@ fun MapScreen(onFindRoute: () -> Unit) {
                     currentLatitude = location.latitude
                     currentLongitude = location.longitude
 
-                    // ACTUALIZA EL ESTADO GLOBAL CON LA UBICACIÓN REAL (RONDIZZONI)
+                    // ACTUALIZA EL ESTADO GLOBAL CON LA UBICACIÓN REAL
                     UserLocationState.currentLocation =
                         GeoPoint(location.latitude, location.longitude)
                 }
@@ -164,11 +166,13 @@ fun MapScreen(onFindRoute: () -> Unit) {
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Mapa dinámico con la posición real del dispositivo
+        // 🟢 PASAMOS EL ESTADO DE SEGUIMIENTO Y EL CALLBACK PARA CUANDO EL USUARIO MUEVA EL MAPA
         MapViewOSM(
             latitude = currentLatitude,
             longitude = currentLongitude,
-            recenterTrigger = recenterTrigger
+            recenterTrigger = recenterTrigger,
+            isTrackingUser = isTrackingUser,
+            onMapTouched = { isTrackingUser = false }
         )
 
         // Barra superior con estado del GPS y red
@@ -199,9 +203,10 @@ fun MapScreen(onFindRoute: () -> Unit) {
             }
         }
 
-        // Botón flotante para Recentrar en cualquier momento a la posición exacta
+        // 🟢 BOTÓN RECENTRAR: REACTIVA EL SEGUIMIENTO AL PRESIONAR
         FloatingActionButton(
             onClick = {
+                isTrackingUser = true // 🟢 Reactiva el seguimiento automático
                 if (hasLocationPermission) {
                     requestFreshLocation()
                 } else {
@@ -214,7 +219,7 @@ fun MapScreen(onFindRoute: () -> Unit) {
                 }
             },
             containerColor = SurfaceWhite,
-            contentColor = EvacuBlue,
+            contentColor = if (isTrackingUser) EvacuBlue else TextSecondary, // Color dinámico indicando estado
             shape = CircleShape,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
