@@ -260,24 +260,34 @@ fun EmergencyTypeSelectScreen(
 // PANTALLA MODO EMERGENCIA (CALCULO EN RADIO DE 15-20 KM)
 // -------------------------------------------------------------
 
+// PANTALLA MODO EMERGENCIA (USANDO DESTINO SELECCIONADO O CÁLCULO CERCANO)
 @Composable
 fun EmergencyActiveScreen(
     emergencyType: String,
+    selectedDestinationName: String = "Zona Segura", // 🟢 Recibe el nombre del destino
+    selectedDestinationPoint: GeoPoint = GeoPoint(-33.5925, -70.7045), // 🟢 Recibe la coordenada
     onStartNavigation: (destinationName: String, destinationPoint: GeoPoint) -> Unit,
     onBack: () -> Unit
 ) {
     val userPoint = UserLocationState.currentLocation ?: GeoPoint(-33.5925, -70.7045)
-    val maxRadiusMeters = 20_000.0
 
+    // 🟢 Evalúa si viene un destino válido seleccionado desde "Rutas"
+    val hasCustomDestination = selectedDestinationName.isNotBlank() && selectedDestinationName != "Zona Segura"
+
+    // Si no hay destino previo, usa la zona más cercana de la lista por defecto
+    val maxRadiusMeters = 20000.0
     val safeZonesInRange = safeZoneCandidates.filter { zone ->
         userPoint.distanceToAsDouble(zone.point) <= maxRadiusMeters
     }
-
     val nearestSafeZone = safeZonesInRange.minByOrNull { zone ->
         userPoint.distanceToAsDouble(zone.point)
     } ?: safeZoneCandidates.first()
 
-    val distanceMeters = userPoint.distanceToAsDouble(nearestSafeZone.point)
+    // 🟢 Determina cuál destino y punto final mostrar
+    val finalDestinationName = if (hasCustomDestination) selectedDestinationName else nearestSafeZone.name
+    val finalDestinationPoint = if (hasCustomDestination) selectedDestinationPoint else nearestSafeZone.point
+
+    val distanceMeters = userPoint.distanceToAsDouble(finalDestinationPoint)
     val distanceText = if (distanceMeters >= 1000) {
         String.format(Locale.getDefault(), "%.1f km", distanceMeters / 1000.0)
     } else {
@@ -300,7 +310,10 @@ fun EmergencyActiveScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onBack) {
-                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver")
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Volver"
+                    )
                 }
                 Text(
                     text = "MODO EMERGENCIA",
@@ -309,6 +322,7 @@ fun EmergencyActiveScreen(
                     color = DangerRed
                 )
             }
+
             Surface(
                 color = DangerRedLight,
                 shape = RoundedCornerShape(16.dp),
@@ -318,7 +332,11 @@ fun EmergencyActiveScreen(
                     modifier = Modifier.padding(14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = DangerRed)
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = DangerRed
+                    )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = "Escenario: $emergencyType",
@@ -328,6 +346,7 @@ fun EmergencyActiveScreen(
                     )
                 }
             }
+
             Card(
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
@@ -336,36 +355,82 @@ fun EmergencyActiveScreen(
             ) {
                 Column(
                     modifier = Modifier.padding(22.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text(text = "Zona segura más cercana (Radio < 20 km)", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
-                    Text(text = nearestSafeZone.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = TextPrimary)
+                    Text(
+                        text = "Zona segura seleccionada (Radio < 20 km)",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = TextSecondary
+                    )
+                    // 🟢 Muestra el destino real seleccionado
+                    Text(
+                        text = finalDestinationName,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
+                    )
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column {
-                            Text(text = "Distancia", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                            Text(text = distanceText, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = EvacuBlue)
+                            Text(
+                                text = "Distancia",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = TextSecondary
+                            )
+                            Text(
+                                text = distanceText,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = EvacuBlue
+                            )
                         }
                         Column {
-                            Text(text = "Tiempo", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                            Text(text = "$estimatedTimeMinutes min", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = TextPrimary)
+                            Text(
+                                text = "Tiempo",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = TextSecondary
+                            )
+                            Text(
+                                text = "$estimatedTimeMinutes min",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
                         }
                         Column {
-                            Text(text = "Riesgo ML", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                            Text(text = nearestSafeZone.riskLevel, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = SafeGreen)
+                            Text(
+                                text = "Riesgo ML",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = TextSecondary
+                            )
+                            Text(
+                                text = "Bajo",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = SafeGreen
+                            )
                         }
                     }
                 }
             }
+
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = WarningAmberLight),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = WarningAmber)
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = WarningAmber
+                    )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = "Grafo de calles calculado en tiempo real mediante OpenStreetMap.",
@@ -374,19 +439,32 @@ fun EmergencyActiveScreen(
                     )
                 }
             }
+
             Spacer(modifier = Modifier.weight(1f))
+
             Button(
-                onClick = { onStartNavigation(nearestSafeZone.name, nearestSafeZone.point) },
+                onClick = { onStartNavigation(finalDestinationName, finalDestinationPoint) }, // 🟢 Pasa el destino correcto a la navegación
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(60.dp),
                 shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = SafeGreen, contentColor = Color.White)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = SafeGreen,
+                    contentColor = Color.White
+                )
             ) {
-                Icon(imageVector = Icons.Default.Navigation, contentDescription = null)
+                Icon(
+                    imageVector = Icons.Default.Navigation,
+                    contentDescription = null
+                )
                 Spacer(modifier = Modifier.width(10.dp))
-                Text(text = "INICIAR EVACUACIÓN", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "INICIAR EVACUACIÓN",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
             }
+
             OutlinedButton(
                 onClick = onBack,
                 modifier = Modifier
@@ -395,7 +473,10 @@ fun EmergencyActiveScreen(
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = EvacuBlue)
             ) {
-                Text(text = "BUSCAR OTRA RUTA", fontWeight = FontWeight.Bold)
+                Text(
+                    text = "BUSCAR OTRA RUTA",
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
@@ -694,4 +775,73 @@ private fun findClosestPointIndex(points: List<GeoPoint>, current: GeoPoint): In
         }
     }
     return minIndex
+}
+
+@Composable
+fun OptimizedNavigationMapOSM(
+    currentPoint: GeoPoint,
+    destinationPoint: GeoPoint,
+    routePoints: List<GeoPoint>,
+    bearing: Float = 0f
+) {
+    val context = LocalContext.current
+
+    val mapView = remember {
+        MapView(context).apply {
+            setTileSource(TileSourceFactory.MAPNIK)
+            setMultiTouchControls(true)
+            isTilesScaledToDpi = true
+            controller.setZoom(17.0)
+        }
+    }
+
+    val routePolyline = remember {
+        Polyline(mapView).apply {
+            outlinePaint.strokeCap = Paint.Cap.ROUND
+            outlinePaint.strokeJoin = Paint.Join.ROUND
+            outlinePaint.strokeWidth = 14f
+            outlinePaint.color = Color(0xFF0066FF).toArgb()
+        }
+    }
+
+    val userMarker = remember {
+        Marker(mapView).apply {
+            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+            title = "Tu posición"
+        }
+    }
+
+    val destinationMarker = remember {
+        Marker(mapView).apply {
+            position = destinationPoint
+            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+            title = "Zona Segura"
+        }
+    }
+
+    // 🟢 Carga la ruta UNA SOLA VEZ al inicio (sin parpadear)
+    LaunchedEffect(routePoints) {
+        if (routePoints.isNotEmpty()) {
+            mapView.overlays.clear()
+            routePolyline.setPoints(routePoints)
+            mapView.overlays.add(routePolyline)
+            mapView.overlays.add(destinationMarker)
+            mapView.overlays.add(userMarker)
+            mapView.controller.setCenter(currentPoint)
+            mapView.invalidate()
+        }
+    }
+
+    // 🟢 Mueve solo el marcador del usuario con el GPS (fluido a 60 FPS)
+    LaunchedEffect(currentPoint, bearing) {
+        userMarker.position = currentPoint
+        userMarker.rotation = bearing
+        mapView.controller.animateTo(currentPoint)
+        mapView.invalidate()
+    }
+
+    AndroidView(
+        factory = { mapView },
+        modifier = Modifier.fillMaxSize()
+    )
 }

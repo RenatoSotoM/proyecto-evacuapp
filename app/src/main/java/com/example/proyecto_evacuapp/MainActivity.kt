@@ -1,5 +1,5 @@
 package com.example.proyecto_evacuapp
-
+// Actualizacion en rutas, ahora muestra ubicacion real al iniciar ruta
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -41,6 +41,7 @@ import com.example.proyecto_evacuapp.ui.screens.InitialSetupScreen
 import com.example.proyecto_evacuapp.ui.screens.MapScreen
 import com.example.proyecto_evacuapp.ui.screens.OnboardingScreen
 import com.example.proyecto_evacuapp.ui.screens.ProfileScreen
+import com.example.proyecto_evacuapp.ui.screens.RealStreetRoute // 🟢 Importación agregada
 import com.example.proyecto_evacuapp.ui.screens.ReportsScreen
 import com.example.proyecto_evacuapp.ui.screens.RoutesScreen
 import com.example.proyecto_evacuapp.ui.screens.SplashScreen
@@ -91,7 +92,10 @@ fun EvacuAppApp() {
     var currentFlow by remember { mutableStateOf(ScreenFlow.SPLASH) }
     var selectedEmergency by remember { mutableStateOf("Terremoto") }
 
-    // 🟢 ESTADOS AGREGADOS PARA GUARDAR LA ZONA SEGURA SELECCIONADA
+    // 🟢 ESTADO GLOBAL PARA ALMACENAR LA RUTA SELECCIONADA EN "RUTAS"
+    var selectedRoute by remember { mutableStateOf<RealStreetRoute?>(null) }
+
+    // ESTADOS PARA GUARDAR LA ZONA SEGURA Y COORDENADAS SELECCIONADAS
     var selectedDestinationName by remember { mutableStateOf("Zona Segura") }
     var selectedDestinationPoint by remember { mutableStateOf(GeoPoint(-33.5925, -70.7045)) }
 
@@ -112,6 +116,13 @@ fun EvacuAppApp() {
         ScreenFlow.MAIN_TABS -> MainTabsContainer(
             userMobility = userMobilityProfile,
             onOpenEmergency = { currentFlow = ScreenFlow.EMERGENCY_SELECT },
+            onSelectRoute = { route ->
+                // 🟢 CAPTURA LA RUTA Y SUS COORDENADAS REALES SELECCIONADAS
+                selectedRoute = route
+                selectedDestinationName = route.destination
+                selectedDestinationPoint = route.endPoint
+                currentFlow = ScreenFlow.EMERGENCY_SELECT
+            },
             onChangeMobility = { userMobilityProfile = it }
         )
         ScreenFlow.EMERGENCY_SELECT -> EmergencyTypeSelectScreen(
@@ -123,10 +134,13 @@ fun EvacuAppApp() {
         )
         ScreenFlow.EMERGENCY_ACTIVE -> EmergencyActiveScreen(
             emergencyType = selectedEmergency,
+            selectedDestinationName = selectedDestinationName,   // 🟢 SE ENVÍA EL DESTINO SELECCIONADO
+            selectedDestinationPoint = selectedDestinationPoint, // 🟢 SE ENVIAN LAS COORDENADAS SELECCIONADAS
             onStartNavigation = { destinationName, destinationPoint ->
-                // 🟢 SE GUARDAN LOS DATOS DEL DESTINO Y SE CAMBIA EL FLUJO
-                selectedDestinationName = destinationName
-                selectedDestinationPoint = destinationPoint
+                if (destinationName.isNotBlank() && destinationName != "Zona Segura") {
+                    selectedDestinationName = destinationName
+                    selectedDestinationPoint = destinationPoint
+                }
                 currentFlow = ScreenFlow.ACTIVE_NAVIGATION
             },
             onBack = { currentFlow = ScreenFlow.EMERGENCY_SELECT }
@@ -146,6 +160,7 @@ data class BottomNavTab(val label: String, val icon: ImageVector)
 fun MainTabsContainer(
     userMobility: String,
     onOpenEmergency: () -> Unit,
+    onSelectRoute: (RealStreetRoute) -> Unit, // 🟢 Recibe el objeto con la ruta seleccionada
     onChangeMobility: (String) -> Unit
 ) {
     var selectedTabIndex by remember { mutableIntStateOf(0) }
@@ -201,7 +216,7 @@ fun MainTabsContainer(
                 0 -> MapScreen(onFindRoute = onOpenEmergency)
                 1 -> RoutesScreen(
                     mobilityMode = userMobility,
-                    onSelectRoute = onOpenEmergency,
+                    onSelectRoute = onSelectRoute, // 🟢 Conectado con la función que guarda la ruta
                     onChangeMobility = onChangeMobility
                 )
                 2 -> ReportsScreen()

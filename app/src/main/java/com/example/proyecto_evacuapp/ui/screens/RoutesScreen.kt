@@ -89,14 +89,19 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
+import java.net.HttpURLConnection
+import java.net.URL
 
-// Modelo para Zonas Seguras reportadas (marcas reales)
+// --- MODELOS DE DATOS ---
 data class SafeZone(
     val id: String,
     val name: String,
@@ -123,17 +128,83 @@ data class RealStreetRoute(
     val routingError: String? = null
 )
 
+// --- SERVICIO DE BÚSQUEDA DE POIS REALES (OpenStreetMap Overpass) ---
+object RealPoiService {
+    suspend fun fetchNearbyEmergencyPois(userLocation: GeoPoint): List<SafeZone> = withContext(Dispatchers.IO) {
+        val pois = mutableListOf<SafeZone>()
+        val radiusMeters = 15000 // Máximo 15 km
+        val lat = userLocation.latitude
+        val lon = userLocation.longitude
+
+        val query = """
+            [out:json];
+            (
+              node["amenity"="hospital"](around:$radiusMeters,$lat,$lon);
+              node["amenity"="clinic"](around:$radiusMeters,$lat,$lon);
+              node["amenity"="townhall"](around:$radiusMeters,$lat,$lon);
+              node["amenity"="police"](around:$radiusMeters,$lat,$lon);
+            );
+            out body 15;
+        """.trimIndent()
+
+        try {
+            val url = URL("https://overpass-api.de/api/interpreter?data=" + java.net.URLEncoder.encode(query, "UTF-8"))
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 4000
+
+            if (conn.responseCode == 200) {
+                val response = conn.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(response)
+                val elements = json.getJSONArray("elements")
+
+                for (i in 0 until elements.length()) {
+                    val item = elements.getJSONObject(i)
+                    val id = item.optString("id", i.toString())
+                    val itemLat = item.getDouble("lat")
+                    val itemLon = item.getDouble("lon")
+                    val tags = item.optJSONObject("tags")
+
+                    val name = tags?.optString("name") ?: when (tags?.optString("amenity")) {
+                        "hospital" -> "Hospital / Centro Médico"
+                        "clinic" -> "Clínica de Salud"
+                        "townhall" -> "Municipalidad / Centro Cívico"
+                        "police" -> "Comisaría / Punto Seguro"
+                        else -> "Zona de Evacuación Real"
+                    }
+
+                    pois.add(
+                        SafeZone(
+                            id = id,
+                            name = name,
+                            location = GeoPoint(itemLat, itemLon),
+                            isVerifiedByAdmin = true,
+                            description = "Punto seguro real detectado"
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return@withContext pois
+    }
+}
+
+// --- PANTALLA PRINCIPAL ---
 @Composable
 fun RoutesScreen(
     mobilityMode: String,
     availableSafeZones: List<SafeZone> = emptyList(),
-    onSelectRoute: () -> Unit,
+    onSelectRoute: (RealStreetRoute) -> Unit,
     onChangeMobility: (String) -> Unit
 ) {
     val context = LocalContext.current
-    val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
+    val fusedLocationClient = remember {
+        LocationServices.getFusedLocationProviderClient(context)
+    }
 
-    // 1. Lectura del GPS en tiempo real para esta pantalla
+    // 1. GPS en tiempo real
     var liveUserLocation by remember { mutableStateOf<GeoPoint?>(UserLocationState.currentLocation) }
     var hasPermission by remember {
         mutableStateOf(
@@ -148,7 +219,6 @@ fun RoutesScreen(
         hasPermission = permissions.values.any { it }
     }
 
-    // Monitoreo en tiempo real del GPS
     DisposableEffect(hasPermission) {
         if (hasPermission) {
             try {
@@ -159,7 +229,6 @@ fun RoutesScreen(
                         UserLocationState.currentLocation = point
                     }
                 }
-
                 val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 3000L)
                     .setMinUpdateIntervalMillis(1500L)
                     .build()
@@ -173,29 +242,22 @@ fun RoutesScreen(
                         }
                     }
                 }
-
                 fusedLocationClient.requestLocationUpdates(locationRequest, callback, Looper.getMainLooper())
 
-                onDispose {
-                    fusedLocationClient.removeLocationUpdates(callback)
-                }
+                onDispose { fusedLocationClient.removeLocationUpdates(callback) }
             } catch (e: SecurityException) {
-                onDispose { }
+                onDispose {}
             }
         } else {
             permissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                )
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
             )
-            onDispose { }
+            onDispose {}
         }
     }
 
-    // 2. Si el GPS aún no devuelve una coordenada física, muestra pantalla de carga viva
+    // 2. Pantalla de carga si no hay GPS aún
     val currentStartPoint = liveUserLocation ?: UserLocationState.currentLocation
-
     if (currentStartPoint == null) {
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -215,10 +277,29 @@ fun RoutesScreen(
         return
     }
 
-    // 3. A partir de aquí, currentStartPoint contiene la posición exacta actual del usuario
+    // 🟢 ANCLAJE DE GPS: Solo recalculamos la ruta por internet si el usuario camina/avanza más de 80 metros
+    var routeAnchorPoint by remember { mutableStateOf<GeoPoint?>(null) }
+    LaunchedEffect(currentStartPoint) {
+        val anchor = routeAnchorPoint
+        if (anchor == null || anchor.distanceToAsDouble(currentStartPoint) > 80.0) {
+            routeAnchorPoint = currentStartPoint
+        }
+    }
+
+    val startPointForRouting = routeAnchorPoint ?: currentStartPoint
+
+    // 🟢 CARGA DE POIS REALES (Hospitales, Comisarías, Municipalidades reales)
+    var fetchedRealPois by remember { mutableStateOf<List<SafeZone>>(emptyList()) }
+    LaunchedEffect(startPointForRouting) {
+        val pois = RealPoiService.fetchNearbyEmergencyPois(startPointForRouting)
+        if (pois.isNotEmpty()) {
+            fetchedRealPois = pois
+        }
+    }
+
+    // 3. Estados de la pantalla
     var selectedRouteId by remember { mutableIntStateOf(0) }
     var selectedLayerName by remember { mutableStateOf("Estándar") }
-
     val mobilityModes = listOf("Vehículo", "A pie", "Bicicleta", "Movilidad reducida")
 
     val sharedIncidents = IncidentSharedState.incidents
@@ -231,35 +312,38 @@ fun RoutesScreen(
             IncidentType.RUTA_INACCESIBLE
         )
     }
-
     val verifiedBlockedSegments = IncidentSharedState.verifiedBlockedSegmentIds()
     val hasVerifiedRoadBlock = verifiedBlockedSegments.isNotEmpty()
 
-    // 4. Zonas Seguras reportadas (marcas reales)
-    val safeZonesList = if (availableSafeZones.isNotEmpty()) {
-        availableSafeZones
-    } else {
-        remember {
-            listOf(
-                SafeZone("sz1", "Zona Segura: Parque O'Higgins", GeoPoint(-33.4638, -70.6610)),
-                SafeZone("sz2", "Zona Segura: Explanada Sur", GeoPoint(-33.4730, -70.6580)),
-                SafeZone("sz3", "Zona Segura: Plaza Almagro", GeoPoint(-33.4550, -70.6500))
-            )
-        }
+    // 4. COMBINACIÓN Y FILTRADO ESTRICTO DE 15 KM
+    val defaultZones = remember {
+        listOf(
+            SafeZone("sz1", "Zona Segura: Parque O'Higgins", GeoPoint(-33.4638, -70.6610)),
+            SafeZone("sz2", "Zona Segura: Explanada Sur", GeoPoint(-33.4730, -70.6580)),
+            SafeZone("sz3", "Zona Segura: Plaza Almagro", GeoPoint(-33.4550, -70.6500))
+        )
     }
 
-    // Ordenar zonas seguras desde la posición VIVA actual del usuario
-    val sortedSafeZones = remember(currentStartPoint, safeZonesList) {
-        safeZonesList.sortedBy { zone ->
-            currentStartPoint.distanceToAsDouble(zone.location)
-        }
+    val MAX_RADIUS_METERS = 15000.0 // 15 km de límite estricto
+
+    val allPossibleZones = (availableSafeZones + fetchedRealPois + defaultZones).distinctBy { it.id }
+
+    val sortedSafeZones = remember(startPointForRouting, allPossibleZones) {
+        allPossibleZones
+            .filter { zone ->
+                // Descarta cualquier lugar a más de 15 km
+                startPointForRouting.distanceToAsDouble(zone.location) <= MAX_RADIUS_METERS
+            }
+            .sortedBy { zone ->
+                startPointForRouting.distanceToAsDouble(zone.location)
+            }
     }
 
-    val primaryDestination = sortedSafeZones.firstOrNull() ?: SafeZone("def", "Zona Segura Principal", GeoPoint(-33.4638, -70.6610))
+    val primaryDestination = sortedSafeZones.firstOrNull() ?: defaultZones.first()
     val secondaryDestination = sortedSafeZones.getOrNull(1) ?: primaryDestination
 
-    // 5. Generar opciones de rutas basadas en el punto VIVO y el destino más cercano
-    val baseRoutes = remember(mobilityMode, currentStartPoint, primaryDestination, secondaryDestination, verifiedBlockedSegments) {
+    // 5. Opciones de ruta estáticas por anclaje
+    val baseRoutes = remember(mobilityMode, startPointForRouting, primaryDestination, secondaryDestination, verifiedBlockedSegments) {
         when (mobilityMode) {
             "Vehículo" -> {
                 if (hasVerifiedRoadBlock) {
@@ -274,8 +358,8 @@ fun RoutesScreen(
                             riskColor = SafeGreen,
                             riskBg = SafeGreenLight,
                             routeLineColor = EvacuBlue,
-                            criteriaReason = "Calculada dinámicamente desde tu posición actual evitando tramos bloqueados.",
-                            startPoint = currentStartPoint,
+                            criteriaReason = "Calculada dinámicamente evitando tramos bloqueados en un radio < 15km.",
+                            startPoint = startPointForRouting,
                             endPoint = primaryDestination.location
                         ),
                         RealStreetRoute(
@@ -288,8 +372,8 @@ fun RoutesScreen(
                             riskColor = SafeGreen,
                             riskBg = SafeGreenLight,
                             routeLineColor = SafeGreen,
-                            criteriaReason = "Alternativa secundaria hacia la siguiente marca real reportada.",
-                            startPoint = currentStartPoint,
+                            criteriaReason = "Alternativa secundaria hacia zona segura cercana.",
+                            startPoint = startPointForRouting,
                             endPoint = secondaryDestination.location
                         )
                     )
@@ -305,8 +389,8 @@ fun RoutesScreen(
                             riskColor = WarningAmber,
                             riskBg = WarningAmberLight,
                             routeLineColor = EvacuBlue,
-                            criteriaReason = "Ruta directa trazada por calles navegables desde tu posición actual.",
-                            startPoint = currentStartPoint,
+                            criteriaReason = "Ruta directa trazada por calles navegables.",
+                            startPoint = startPointForRouting,
                             endPoint = primaryDestination.location
                         )
                     )
@@ -323,8 +407,8 @@ fun RoutesScreen(
                     riskColor = SafeGreen,
                     riskBg = SafeGreenLight,
                     routeLineColor = EvacuBlue,
-                    criteriaReason = "Ruta adaptada para ciclismo desde donde te encuentres.",
-                    startPoint = currentStartPoint,
+                    criteriaReason = "Ruta adaptada para ciclismo (< 15km).",
+                    startPoint = startPointForRouting,
                     endPoint = primaryDestination.location
                 )
             )
@@ -339,8 +423,8 @@ fun RoutesScreen(
                     riskColor = SafeGreen,
                     riskBg = SafeGreenLight,
                     routeLineColor = SafeGreen,
-                    criteriaReason = "Trayecto optimizado sin barreras arquitectónicas conocidas.",
-                    startPoint = currentStartPoint,
+                    criteriaReason = "Trayecto sin barreras arquitectónicas (< 15km).",
+                    startPoint = startPointForRouting,
                     endPoint = primaryDestination.location
                 )
             )
@@ -355,8 +439,8 @@ fun RoutesScreen(
                     riskColor = SafeGreen,
                     riskBg = SafeGreenLight,
                     routeLineColor = EvacuBlue,
-                    criteriaReason = "Ruta a pie adaptada en tiempo real a tu ubicación actual.",
-                    startPoint = currentStartPoint,
+                    criteriaReason = "Ruta a pie adaptada en tiempo real.",
+                    startPoint = startPointForRouting,
                     endPoint = primaryDestination.location
                 ),
                 RealStreetRoute(
@@ -369,8 +453,8 @@ fun RoutesScreen(
                     riskColor = SafeGreen,
                     riskBg = SafeGreenLight,
                     routeLineColor = SafeGreen,
-                    criteriaReason = "Alternativa a pie hacia otra zona de evacuación reportada.",
-                    startPoint = currentStartPoint,
+                    criteriaReason = "Alternativa a pie hacia punto de ayuda cercano.",
+                    startPoint = startPointForRouting,
                     endPoint = secondaryDestination.location
                 )
             )
@@ -385,7 +469,7 @@ fun RoutesScreen(
         }
     }
 
-    // Consulta a OSRM con el origen dinámico
+    // Consulta OSRM por red
     LaunchedEffect(baseRoutes, mobilityMode, verifiedBlockedSegments) {
         calculatedRoutes = baseRoutes.map { route ->
             val result = OsrmRoutingService.fetchRealStreetRoute(
@@ -393,7 +477,6 @@ fun RoutesScreen(
                 end = route.endPoint,
                 profile = mobilityMode
             )
-
             route.copy(
                 polylinePoints = result.points,
                 distance = result.distanceText,
@@ -428,7 +511,6 @@ fun RoutesScreen(
                     fontWeight = FontWeight.Bold,
                     color = TextPrimary
                 )
-
                 Surface(
                     color = EvacuBlueLight,
                     shape = RoundedCornerShape(50)
@@ -456,7 +538,6 @@ fun RoutesScreen(
                         "Movilidad reducida" -> Icons.Default.WheelchairPickup
                         else -> Icons.Default.DirectionsWalk
                     }
-
                     FilterChip(
                         selected = mobilityMode == mode,
                         onClick = {
@@ -479,140 +560,141 @@ fun RoutesScreen(
                     )
                 }
             }
-        }
 
-        ActiveEvacuationRouteWidget(
-            route = activeRoute,
-            mobilityMode = mobilityMode,
-            onStartNavigation = onSelectRoute
-        )
+            ActiveEvacuationRouteWidget(
+                route = activeRoute,
+                mobilityMode = mobilityMode,
+                onStartNavigation = { onSelectRoute(activeRoute) }
+            )
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(220.dp)
-                .padding(horizontal = 16.dp, vertical = 4.dp)
-        ) {
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier.fillMaxSize(),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-            ) {
-                RealStreetRouteMapOSM(
-                    route = activeRoute,
-                    layerName = selectedLayerName
-                )
-            }
-
-            FloatingActionButton(
-                onClick = {
-                    selectedLayerName = when (selectedLayerName) {
-                        "Estándar" -> "Topográfico"
-                        "Topográfico" -> "Transporte"
-                        else -> "Estándar"
-                    }
-                },
-                containerColor = SurfaceWhite,
-                contentColor = EvacuBlue,
-                shape = CircleShape,
+            Box(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(12.dp)
-                    .size(40.dp)
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Layers,
-                    contentDescription = "Cambiar capa del mapa",
-                    modifier = Modifier.size(20.dp)
-                )
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.fillMaxSize(),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                ) {
+                    RealStreetRouteMapOSM(
+                        route = activeRoute,
+                        layerName = selectedLayerName
+                    )
+                }
+
+                FloatingActionButton(
+                    onClick = {
+                        selectedLayerName = when (selectedLayerName) {
+                            "Estándar" -> "Topográfico"
+                            "Topográfico" -> "Transporte"
+                            else -> "Estándar"
+                        }
+                    },
+                    containerColor = SurfaceWhite,
+                    contentColor = EvacuBlue,
+                    shape = CircleShape,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp)
+                        .size(40.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Layers,
+                        contentDescription = "Cambiar capa del mapa",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                if (activeRoute.isLoading) {
+                    Surface(
+                        color = SurfaceWhite.copy(alpha = 0.94f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(12.dp)
+                    ) {
+                        Text(
+                            text = "Calculando ruta por calles reales (<15km)...",
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextPrimary
+                        )
+                    }
+                }
             }
 
-            if (activeRoute.isLoading) {
-                Surface(
-                    color = SurfaceWhite.copy(alpha = 0.94f),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(12.dp)
-                ) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (hasVerifiedRoadBlock) DangerRedLight else WarningAmberLight
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (hasVerifiedRoadBlock) Icons.Default.Warning else Icons.Default.AutoGraph,
+                                contentDescription = null,
+                                tint = if (hasVerifiedRoadBlock) DangerRed else WarningAmber
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (hasVerifiedRoadBlock) "Incidente verificado: ruta recalculada" else "Sin bloqueos viales verificados",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (hasVerifiedRoadBlock) DangerRed else WarningAmber
+                            )
+                        }
+                        Surface(
+                            color = if (hasVerifiedRoadBlock) DangerRed else WarningAmber,
+                            shape = RoundedCornerShape(50)
+                        ) {
+                            Text(
+                                text = if (hasVerifiedRoadBlock) "${verifiedRoadIncidents.size} bloqueo(s)" else "Sin desvíos",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(5.dp))
                     Text(
-                        text = "Calculando ruta por calles reales...",
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        style = MaterialTheme.typography.labelSmall,
+                        text = if (hasVerifiedRoadBlock) {
+                            "El consenso comunitario verificó un incidente y el sistema selecciona rutas alternativas desde tu posición actual."
+                        } else {
+                            "Los reportes de la comunidad modificarán la ruta cuando alcancen una confianza Beta superior al 75%."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
                         color = TextPrimary
                     )
                 }
             }
-        }
 
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = if (hasVerifiedRoadBlock) DangerRedLight else WarningAmberLight
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp)
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = if (hasVerifiedRoadBlock) Icons.Default.Warning else Icons.Default.AutoGraph,
-                            contentDescription = null,
-                            tint = if (hasVerifiedRoadBlock) DangerRed else WarningAmber
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (hasVerifiedRoadBlock) "Incidente verificado: ruta recalculada" else "Sin bloqueos viales verificados",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (hasVerifiedRoadBlock) DangerRed else WarningAmber
-                        )
-                    }
-                    Surface(
-                        color = if (hasVerifiedRoadBlock) DangerRed else WarningAmber,
-                        shape = RoundedCornerShape(50)
-                    ) {
-                        Text(
-                            text = if (hasVerifiedRoadBlock) "${verifiedRoadIncidents.size} bloqueo(s)" else "Sin desvíos",
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                calculatedRoutes.forEachIndexed { index, route ->
+                    SelectableRealRouteCard(
+                        route = route,
+                        isSelected = selectedRouteId == index,
+                        onSelect = { selectedRouteId = index }
+                    )
                 }
-                Spacer(modifier = Modifier.height(5.dp))
-                Text(
-                    text = if (hasVerifiedRoadBlock) {
-                        "El consenso comunitario verificó un incidente y el sistema selecciona rutas alternativas desde tu posición actual."
-                    } else {
-                        "Los reportes de la comunidad modificarán la ruta cuando alcancen una confianza Beta superior al 75%."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextPrimary
-                )
             }
-        }
 
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            calculatedRoutes.forEachIndexed { index, route ->
-                SelectableRealRouteCard(
-                    route = route,
-                    isSelected = selectedRouteId == index,
-                    onSelect = { selectedRouteId = index }
-                )
-            }
             Spacer(modifier = Modifier.height(16.dp))
         }
     }
@@ -648,9 +730,7 @@ fun ActiveEvacuationRouteWidget(
                         shape = CircleShape,
                         modifier = Modifier.size(12.dp)
                     ) {}
-
                     Spacer(modifier = Modifier.width(8.dp))
-
                     Column {
                         Text(
                             text = "RUTA DE EVACUACIÓN",
@@ -658,7 +738,6 @@ fun ActiveEvacuationRouteWidget(
                             fontWeight = FontWeight.Bold,
                             color = EvacuBlue
                         )
-
                         Text(
                             text = route.title,
                             style = MaterialTheme.typography.titleMedium,
@@ -667,7 +746,6 @@ fun ActiveEvacuationRouteWidget(
                         )
                     }
                 }
-
                 Surface(
                     color = route.riskBg,
                     shape = RoundedCornerShape(50)
@@ -693,7 +771,7 @@ fun ActiveEvacuationRouteWidget(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 RouteMetric(label = "DISTANCIA", value = route.distance, modifier = Modifier.weight(1f))
-                RouteMetric(label = "TIEMPO EST.", value = route.estimatedTime, modifier = Modifier.weight(1f))
+                RouteMetric(label = "TIEMPO EST.", value = route.estimatedTime, modifier = Modifier.weight(1.1f))
                 RouteMetric(label = "MODO", value = mobilityMode, modifier = Modifier.weight(1f))
             }
 
@@ -747,34 +825,33 @@ fun RouteMetric(label: String, value: String, modifier: Modifier = Modifier) {
     }
 }
 
+// 🟢 MAPA CORREGIDO: No se vuelve a centrar solo si el usuario arrastra la pantalla
 @Composable
 fun RealStreetRouteMapOSM(route: RealStreetRoute, layerName: String) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    val (mapView, polyline, startMarker, endMarker) = remember {
-        Configuration.getInstance().userAgentValue =
-            "EvacuApp-UBO-StudentProject/1.0 (${context.packageName})"
+    // Control para animar solo una vez al cambiar de ruta
+    var hasAnimatedForRoute by remember(route.id) { mutableStateOf(false) }
 
+    val (mapView, polyline, startMarker, endMarker) = remember {
+        Configuration.getInstance().userAgentValue = "EvacuApp-UBO-StudentProject/1.0 (${context.packageName})"
         val map = MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
-            setMultiTouchControls(true)
+            setMultiTouchControls(true) // Permite mover libremente sin re-centrados forzados
             isTilesScaledToDpi = true
             controller.setZoom(16.0)
         }
-
         val start = Marker(map).apply {
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
             title = "Tu ubicación actual"
             setInfoWindow(null)
         }
-
         val end = Marker(map).apply {
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
             title = route.destination
             setInfoWindow(null)
         }
-
         val line = Polyline(map).apply {
             outlinePaint.strokeCap = Paint.Cap.ROUND
             outlinePaint.strokeJoin = Paint.Join.ROUND
@@ -798,7 +875,7 @@ fun RealStreetRouteMapOSM(route: RealStreetRoute, layerName: String) {
         map.invalidate()
     }
 
-    LaunchedEffect(route) {
+    LaunchedEffect(route.id, route.polylinePoints, route.routeLineColor) {
         val map = mapView as MapView
         val line = polyline as Polyline
         val start = startMarker as Marker
@@ -813,13 +890,15 @@ fun RealStreetRouteMapOSM(route: RealStreetRoute, layerName: String) {
         } else {
             line.setPoints(emptyList())
         }
-
         line.outlinePaint.color = route.routeLineColor.toArgb()
 
-        val centerLat = (route.startPoint.latitude + route.endPoint.latitude) / 2.0
-        val centerLon = (route.startPoint.longitude + route.endPoint.longitude) / 2.0
-
-        map.controller.animateTo(GeoPoint(centerLat, centerLon), 15.8, 400L)
+        // Solo se ejecuta 1 sola vez al seleccionar la ruta para no interrumpir la exploración del usuario
+        if (!hasAnimatedForRoute && route.polylinePoints.isNotEmpty()) {
+            val centerLat = (route.startPoint.latitude + route.endPoint.latitude) / 2.0
+            val centerLon = (route.startPoint.longitude + route.endPoint.longitude) / 2.0
+            map.controller.animateTo(GeoPoint(centerLat, centerLon), 15.0, 400L)
+            hasAnimatedForRoute = true
+        }
         map.invalidate()
     }
 
@@ -840,7 +919,10 @@ fun RealStreetRouteMapOSM(route: RealStreetRoute, layerName: String) {
         }
     }
 
-    AndroidView(factory = { mapView as MapView }, modifier = Modifier.fillMaxSize())
+    AndroidView(
+        factory = { mapView as MapView },
+        modifier = Modifier.fillMaxSize()
+    )
 }
 
 @Composable
@@ -876,9 +958,7 @@ fun SelectableRealRouteCard(
                     shape = CircleShape,
                     modifier = Modifier.size(12.dp)
                 ) {}
-
                 Spacer(modifier = Modifier.width(8.dp))
-
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = route.title,
@@ -886,14 +966,12 @@ fun SelectableRealRouteCard(
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
                     )
-
                     Text(
                         text = route.destination,
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
                 }
-
                 if (isSelected) {
                     Surface(
                         color = route.routeLineColor,
@@ -915,12 +993,11 @@ fun SelectableRealRouteCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${route.estimatedTime} · ${route.distance}",
+                    text = "${route.estimatedTime} (${route.distance})",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
                     color = TextPrimary
                 )
-
                 Surface(
                     color = route.riskBg,
                     shape = RoundedCornerShape(50)
