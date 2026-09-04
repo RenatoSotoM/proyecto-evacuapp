@@ -1,5 +1,5 @@
 package com.example.proyecto_evacuapp.ui.components
-// Centralizado funcional en ruta
+
 import android.annotation.SuppressLint
 import android.view.MotionEvent
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,6 +13,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.proyecto_evacuapp.data.IncidentRepository // Asegúrate de importar tu IncidentRepository
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -82,6 +83,27 @@ fun MapViewOSM(
             mapView.controller.animateTo(userLocation, zoomLevel, 800L)
             mapView.invalidate()
         }
+    }
+
+    // 🟢 DIBUJA ICONOS DE INCIDENTES (Aparecen si tienen más de 1 confirmación)
+    val activeReports = IncidentRepository.activeReports
+    LaunchedEffect(activeReports.toList()) {
+        // Limpia unicamente los marcadores de incidentes para no borrar el marcador GPS del usuario
+        mapView.overlays.removeAll { it is Marker && it != userMarker }
+
+        // Filtra los incidentes con 2 o más confirmaciones
+        val verifiedReports = activeReports.filter { it.verificationCount >= 2 }
+
+        verifiedReports.forEach { report ->
+            val incidentMarker = Marker(mapView).apply {
+                position = report.location
+                title = report.title
+                snippet = "${report.description}\nConfirmaciones: ${report.verificationCount}"
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+            }
+            mapView.overlays.add(incidentMarker)
+        }
+        mapView.invalidate()
     }
 
     DisposableEffect(lifecycleOwner) {

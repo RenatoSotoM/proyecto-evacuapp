@@ -1,0 +1,78 @@
+entonces de momento las 5 pantallas: mapa, rutas, reportes, alertas, perfil, de todas estas, estan en funcion mapa (ya se muestra la cartografia, centralizado y en movimiento se va marcando el gps, la opcion de encontrar ruta segura, funciona correctamente, y el boton de reporte en rojo, envia a la pantalla de reportes, funcional.
+
+rutas:
+funciona el filtrado de vehiculo, a pie, bicicleta y movilidad reducida.
+aparece una ruta principal de evacuacion y una de alternativa, muestra el mapa con el grafo generado y la posicion mia junto con la de destino, al poner en iniciar, pide la emergencia, luego se activa el modo emergencia (muestra la zona segura seleccionada, nombre, distancia, tiempo y riesgo), y muestra para iniciar evacuacion, se muestra la pantalla donde se genera el grafo real, de las calles en modo vehiculo, funciona en movimiento.
+
+reportes:
+se puede seleccionar el tipo de incidente, al hacerlo, pide nivel de peligro, descripciones y la ubicacion en coordenadas del celular en el momento, se guarda el reporte, y se puede dar like dos veces para indicar verificado, y en la pantalla ruta se hace el desvio de ruta como aviso (cambia al poner calle bloqueada, sale como 1 incidente en la pantalla de rutas).
+
+alertas (de momento esta fijado en 3 marcas, bloqueo vial, precaucion de inundacion y ruta segura verificada), esta parte es estatica pero luego va a funcionar con los reportes de los usuarios, y en perfil tambien es estatico, muestra fijo aunque uno escoja el perfil, esta fijo en a pie, acompañamiento adultos y zona san bernardo
+
+
+Pantalla,Estado,Funcionalidad Clave Operativa Hace poco
+Mapa,🟢 100% Funcional,"Cartografía OSM, centrado inteligente por gestos táctiles, rastreo GPS continuo en tiempo real, acceso rápido a rutas y botón de reporte."
+Rutas,🟢 100% Funcional,"Filtros por perfil de transporte, grafo principal y alternativo, paso a Modo Emergencia con tiempos/distancias vehiculares reales y actualización en vivo."
+Reportes,🟢 100% Funcional,"Captura automática de coordenadas GPS, categorización de peligro, sistema de verificación por ""likes"" e impacto directo en el desvío de grafos al bloquear calles."
+Alertas,🟡 Estático (MVP),"3 marcas base (bloqueo, inundación, ruta segura). Estructura lista para conectarse al flujo de reportes dinámicos."
+Perfil,🟡 Estático (MVP),"Interfaz definida con datos fijos (a pie, adulto mayor, San Bernardo). Listo para vincular el estado global de usuario."
+
+
+
+Cambios actuales:
+Resumen estructurado de todos los cambios y mejoras implementados en la arquitectura de **EvacuApp**:
+
+---
+
+### 1. `UserSessionState.kt` *(Nuevo Modelo de Estado Global)*
+
+* **Estado de Sesión y Perfil:** Se creó el singleton `UserSessionState` con el modelo `UserProfile` y la enumeración `TransportMode` (`VEHICLE`, `WALKING`, `BICYCLE`, `REDUCED_MOBILITY`) para gestionar los parámetros de movilidad del usuario en tiempo real.
+* **Repositorio de Reportes (`IncidentRepository`):** Se implementó una lista reactiva `activeReports` (`mutableStateListOf`) para centralizar las emergencias emitidas por los usuarios.
+* **Sistema de Verificación:** Métodos para registrar incidentes (`addReport`) e incrementar confirmaciones (`verifyReport`), sumando votos (+1) a cada reporte.
+
+---
+
+### 2. `MapViewOSM.kt` *(Centrado Inteligente y Marcadores Dinámicos)*
+
+* **Desactivación Táctil del Auto-Centrado:** Se agregó un `setOnTouchListener` para detectar cuando el usuario arrastra o toca la pantalla (`ACTION_DOWN`, `ACTION_MOVE`), disparando el callback `onMapTouched()` para apagar el seguimiento automático del GPS.
+* **Centrado Condicional:** La cámara solo ejecuta `animateTo` si `isTrackingUser` es `true` o cuando se presiona explícitamente el botón de recentrar (`recenterTrigger`).
+* **Visualización de Incidentes Confirmados:** Se integró un `LaunchedEffect` que escucha `IncidentRepository.activeReports`. Filtra únicamente las alertas con **2 o más confirmaciones** ($verificationCount \ge 2$) y dibuja sus marcadores en la cartografía sin eliminar el marcador GPS del usuario.
+
+---
+
+### 3. `MapScreen.kt` *(Control de Estado de Seguimiento)*
+
+* **Variable de Estado:** Se añadió `isTrackingUser` (`remember { mutableStateOf(true) }`).
+* **Botón Recentrar (FAB):** Al presionar el botón flotante, reactiva el auto-seguimiento (`isTrackingUser = true`), solicita la posición GPS actualizada y cambia visualmente el color del ícono según el estado activo/libre.
+
+---
+
+### 4. `ProfileScreen.kt` *(Perfil Dinámico y Diálogos de Login/Edición)*
+
+* **Lectura del Estado Global:** Reemplazó los datos fijos por los campos de `UserSessionState.currentUser` (Nombre, Zona, Tipo de Movilidad, Acompañantes).
+* **Íconos Dinámicos:** Cambia automáticamente el ícono de movilidad según el vehículo/modo seleccionado.
+* **Modal `EditPreferencesDialog`:** Permite cambiar el modo de transporte (radio buttons), acompañantes y zona base offline en tiempo real.
+* **Modal `LoginRegisterDialog`:** Permite alternar entre estado de invitado, inicio de sesión y registro de usuario.
+
+---
+
+### 5. `AlertsScreen.kt` *(Filtro por Radio de 5 km y Confirmación en Vivo)*
+
+* **Filtrado Geodésico:** Se calculan las distancias desde la ubicación real (`UserLocationState.currentLocation`) hasta los reportes activos. Se muestran únicamente los incidentes a **menos de $5\text{ km}$**.
+* **Cálculo de Distancia y Tiempo Real:** Convierte dinámicamente la distancia a metros ($< 1\text{ km}$) o kilómetros, y calcula los minutos transcurridos desde que se generó el reporte.
+* **Botón "+1 VERIFICAR":** Permite al usuario confirmar la veracidad de la alerta en tiempo real. Al llegar a 2 confirmaciones, la alerta se proyecta automáticamente como icono en el mapa OSM.
+* **Estado Vacío:** Genera una tarjeta limpia e informativa cuando no existen incidentes en un radio de $5\text{ km}$.
+
+---
+
+### 6. Modelo Matemático en Google Colab *(Distribución Beta)*
+
+* **Simulación Probabilística:** Código en Python para calcular la confiabilidad de los reportes basándose en una **Distribución Beta** $\text{Beta}(\alpha, \beta)$ donde:
+
+$$\alpha = \text{confirmaciones} + 1, \quad \beta = \text{rechazos} + 1$$
+
+
+* **Filtrado Combinado:** Evalúa si la alerta cumple los tres criterios para aparecer en mapa:
+1. Distancia $\le 5\text{ km}$ (fórmula de Haversine).
+2. Confirmaciones $\ge 2$.
+3. Esperanza de confiabilidad $E[X] = \frac{\alpha}{\alpha + \beta} \ge 0.6$ ($60\%$).
