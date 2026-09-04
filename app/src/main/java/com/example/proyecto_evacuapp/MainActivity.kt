@@ -103,6 +103,9 @@ fun EvacuAppApp() {
     var userMobilityProfile by remember { mutableStateOf("Vehículo") }
     var userCompanions by remember { mutableStateOf(setOf("Solo")) }
 
+    var currentRouteDistanceMeters by remember { mutableStateOf<Double?>(null) }
+    var currentRouteDurationSeconds by remember { mutableStateOf<Double?>(null) }
+
     when (currentFlow) {
         ScreenFlow.SPLASH -> SplashScreen(onContinue = { currentFlow = ScreenFlow.ONBOARDING })
         ScreenFlow.ONBOARDING -> OnboardingScreen(onFinish = { currentFlow = ScreenFlow.INITIAL_SETUP })
@@ -134,8 +137,11 @@ fun EvacuAppApp() {
         )
         ScreenFlow.EMERGENCY_ACTIVE -> EmergencyActiveScreen(
             emergencyType = selectedEmergency,
-            selectedDestinationName = selectedDestinationName,   // 🟢 SE ENVÍA EL DESTINO SELECCIONADO
-            selectedDestinationPoint = selectedDestinationPoint, // 🟢 SE ENVIAN LAS COORDENADAS SELECCIONADAS
+            selectedDestinationName = selectedDestinationName,
+            selectedDestinationPoint = selectedDestinationPoint,
+
+            routeDistanceMeters = currentRouteDistanceMeters, // 🟢 Pasa la distancia del grafo (ej. 14600.0)
+            routeDurationSeconds = currentRouteDurationSeconds, // 🟢 Pasa la duración del grafo (ej. 1380.0)
             onStartNavigation = { destinationName, destinationPoint ->
                 if (destinationName.isNotBlank() && destinationName != "Zona Segura") {
                     selectedDestinationName = destinationName

@@ -264,17 +264,17 @@ fun EmergencyTypeSelectScreen(
 @Composable
 fun EmergencyActiveScreen(
     emergencyType: String,
-    selectedDestinationName: String = "Zona Segura", // 🟢 Recibe el nombre del destino
-    selectedDestinationPoint: GeoPoint = GeoPoint(-33.5925, -70.7045), // 🟢 Recibe la coordenada
+    selectedDestinationName: String = "Zona Segura",
+    selectedDestinationPoint: GeoPoint = GeoPoint(-33.5925, -70.7045),
+    routeDistanceMeters: Double? = null, // 🟢 Distancia real del grafo/OSRM
+    routeDurationSeconds: Double? = null, // 🟢 Tiempo real en segundos
     onStartNavigation: (destinationName: String, destinationPoint: GeoPoint) -> Unit,
     onBack: () -> Unit
 ) {
     val userPoint = UserLocationState.currentLocation ?: GeoPoint(-33.5925, -70.7045)
 
-    // 🟢 Evalúa si viene un destino válido seleccionado desde "Rutas"
     val hasCustomDestination = selectedDestinationName.isNotBlank() && selectedDestinationName != "Zona Segura"
 
-    // Si no hay destino previo, usa la zona más cercana de la lista por defecto
     val maxRadiusMeters = 20000.0
     val safeZonesInRange = safeZoneCandidates.filter { zone ->
         userPoint.distanceToAsDouble(zone.point) <= maxRadiusMeters
@@ -283,18 +283,29 @@ fun EmergencyActiveScreen(
         userPoint.distanceToAsDouble(zone.point)
     } ?: safeZoneCandidates.first()
 
-    // 🟢 Determina cuál destino y punto final mostrar
     val finalDestinationName = if (hasCustomDestination) selectedDestinationName else nearestSafeZone.name
     val finalDestinationPoint = if (hasCustomDestination) selectedDestinationPoint else nearestSafeZone.point
 
-    val distanceMeters = userPoint.distanceToAsDouble(finalDestinationPoint)
-    val distanceText = if (distanceMeters >= 1000) {
-        String.format(Locale.getDefault(), "%.1f km", distanceMeters / 1000.0)
+    // 🟢 CÁLCULO DE DISTANCIA REAL O ESTIMACIÓN VEHICULAR
+    val straightDistance = userPoint.distanceToAsDouble(finalDestinationPoint)
+
+    // Si viene la distancia real del grafo la usa; si no, aplica un factor vial de ~1.35x sobre la línea recta
+    val realDistanceMeters = routeDistanceMeters ?: (straightDistance * 1.35)
+
+    val distanceText = if (realDistanceMeters >= 1000) {
+        String.format(Locale.getDefault(), "%.1f km", realDistanceMeters / 1000.0)
     } else {
-        "${distanceMeters.toInt()} m"
+        "${realDistanceMeters.toInt()} m"
     }
 
-    val estimatedTimeMinutes = (distanceMeters / 80.0).toInt().coerceAtLeast(1)
+    // 🟢 CÁLCULO DE TIEMPO VEHICULAR (Promedio 40 km/h = ~666 m/min)
+    val estimatedTimeMinutes = if (routeDurationSeconds != null) {
+        (routeDurationSeconds / 60.0).toInt().coerceAtLeast(1)
+    } else {
+        // Usa ~40 km/h de velocidad promedio vehicular urbana/rural
+        val drivingSpeedMetersPerMin = 666.0
+        (realDistanceMeters / drivingSpeedMetersPerMin).toInt().coerceAtLeast(1)
+    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
         Column(
@@ -358,11 +369,10 @@ fun EmergencyActiveScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Zona segura seleccionada (Radio < 20 km)",
+                        text = "Zona segura seleccionada",
                         style = MaterialTheme.typography.labelLarge,
                         color = TextSecondary
                     )
-                    // 🟢 Muestra el destino real seleccionado
                     Text(
                         text = finalDestinationName,
                         style = MaterialTheme.typography.titleLarge,
@@ -381,7 +391,7 @@ fun EmergencyActiveScreen(
                                 color = TextSecondary
                             )
                             Text(
-                                text = distanceText,
+                                text = distanceText, // 🟢 Muestra ej: 14.6 km
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = EvacuBlue
@@ -394,7 +404,7 @@ fun EmergencyActiveScreen(
                                 color = TextSecondary
                             )
                             Text(
-                                text = "$estimatedTimeMinutes min",
+                                text = "$estimatedTimeMinutes min", // 🟢 Muestra ej: 23 min
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = TextPrimary
@@ -443,7 +453,7 @@ fun EmergencyActiveScreen(
             Spacer(modifier = Modifier.weight(1f))
 
             Button(
-                onClick = { onStartNavigation(finalDestinationName, finalDestinationPoint) }, // 🟢 Pasa el destino correcto a la navegación
+                onClick = { onStartNavigation(finalDestinationName, finalDestinationPoint) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(60.dp),
