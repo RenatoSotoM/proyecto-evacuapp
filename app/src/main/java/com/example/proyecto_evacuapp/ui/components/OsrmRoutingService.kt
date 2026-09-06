@@ -1,5 +1,5 @@
 package com.example.proyecto_evacuapp.ui.components
-
+// Trazado con perfil vehicular
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -18,43 +18,33 @@ data class OsrmRouteResponse(
 object OsrmRoutingService {
 
     /**
-     * Proveedor temporal online de geometrías reales de rutas OSM.
-     *
-     * La respuesta contiene puntos de geometry.coordinates en formato GeoJSON:
-     * [longitud, latitud]. Estos puntos siguen la geometría de calles/caminos.
-     *
-     * No genera rutas artificiales de respaldo. Si no existe red o falla el
-     * proveedor, devuelve una lista vacía para evitar diagonales engañosas.
-     *
-     * En la versión offline-first final, este componente debe reemplazarse
-     * internamente por BRouter/GraphHopper local o por el grafo precargado.
+     * Proveedor online de geometrías de rutas OSM.
+     * Perfil temporalmente fijado a Vehículo (driving/car).
      */
     suspend fun fetchRealStreetRoute(
         start: GeoPoint,
         end: GeoPoint,
-        profile: String
+        profile: String = "Vehículo"
     ): OsrmRouteResponse = withContext(Dispatchers.IO) {
-        val osrmProfile = when (profile) {
-            "Vehículo" -> "driving"
-            "Bicicleta" -> "cycling"
-            "Movilidad reducida" -> "foot"
-            else -> "foot"
+
+        // 🚗 Acepta variaciones con/sin tilde y deja "driving" como valor por defecto (else)
+        val osrmProfile = when (profile.lowercase().trim()) {
+            "vehiculo", "vehículo", "auto", "car", "driving" -> "driving"
+            "bicicleta", "bike", "cycling" -> "cycling"
+            "movilidad reducida", "a pie", "peaton", "peatón", "foot" -> "foot"
+            else -> "driving" // 🔴 Fijado a vehículo ante cualquier caso no contemplado
         }
 
         /*
          * routing.openstreetmap.de publica servidores separados:
-         *
-         * - routed-car     → perfil driving
-         * - routed-bike    → perfil cycling
-         * - routed-foot    → perfil foot
-         *
-         * No basta con cambiar el servidor: el perfil tras /v1 también
-         * debe ser el perfil que ese servidor reconoce.
+         * - routed-car  → perfil driving
+         * - routed-bike → perfil cycling
+         * - routed-foot → perfil foot
          */
         val serviceName = when (osrmProfile) {
             "driving" -> "car"
             "cycling" -> "bike"
-            else -> "foot"
+            else -> "car" // 🔴 Servidor vehicular por defecto
         }
 
         val urlString = buildString {
@@ -161,10 +151,18 @@ object OsrmRoutingService {
                 .toInt()
                 .coerceAtLeast(1)
 
+            val formattedDuration = if (totalMinutes >= 60) {
+                val hours = totalMinutes / 60
+                val mins = totalMinutes % 60
+                "${hours}h ${mins} min"
+            } else {
+                "$totalMinutes min"
+            }
+
             OsrmRouteResponse(
                 points = points,
                 distanceText = distanceText,
-                durationText = "$totalMinutes min"
+                durationText = formattedDuration
             )
         } catch (exception: Exception) {
             OsrmRouteResponse(
