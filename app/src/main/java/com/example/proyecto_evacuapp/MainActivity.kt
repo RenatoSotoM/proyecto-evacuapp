@@ -118,12 +118,21 @@ fun EvacuAppApp() {
         )
         ScreenFlow.MAIN_TABS -> MainTabsContainer(
             userMobility = userMobilityProfile,
-            onOpenEmergency = { currentFlow = ScreenFlow.EMERGENCY_SELECT },
+            onOpenEmergency = { distance, duration ->
+                currentRouteDistanceMeters = distance
+                currentRouteDurationSeconds = duration
+                currentFlow = ScreenFlow.EMERGENCY_SELECT
+            },
             onSelectRoute = { route ->
-                // 🟢 CAPTURA LA RUTA Y SUS COORDENADAS REALES SELECCIONADAS
                 selectedRoute = route
                 selectedDestinationName = route.destination
                 selectedDestinationPoint = route.endPoint
+                currentRouteDistanceMeters = route.distance.toDoubleOrNull() ?: 0.0
+
+                // 🟢 Ajusta 'duration' por el nombre real de la propiedad en tu objeto RealStreetRoute
+                // Por ejemplo, si es route.durationSeconds o si prefieres calcularlo de forma estimada:
+                currentRouteDurationSeconds = (route.distance.toDoubleOrNull() ?: 0.0) / 10.0 // Estimación de velocidad si no existe el campo
+
                 currentFlow = ScreenFlow.EMERGENCY_SELECT
             },
             onChangeMobility = { userMobilityProfile = it }
@@ -140,8 +149,8 @@ fun EvacuAppApp() {
             selectedDestinationName = selectedDestinationName,
             selectedDestinationPoint = selectedDestinationPoint,
 
-            routeDistanceMeters = currentRouteDistanceMeters, // 🟢 Pasa la distancia del grafo (ej. 14600.0)
-            routeDurationSeconds = currentRouteDurationSeconds, // 🟢 Pasa la duración del grafo (ej. 1380.0)
+            routeDistanceMeters = currentRouteDistanceMeters,
+            routeDurationSeconds = currentRouteDurationSeconds,
             onStartNavigation = { destinationName, destinationPoint ->
                 if (destinationName.isNotBlank() && destinationName != "Zona Segura") {
                     selectedDestinationName = destinationName
@@ -162,11 +171,12 @@ fun EvacuAppApp() {
 
 data class BottomNavTab(val label: String, val icon: ImageVector)
 
+// Modifica MainTabsContainer para que acepte distancia y duración reales desde el Mapa
 @Composable
 fun MainTabsContainer(
     userMobility: String,
-    onOpenEmergency: () -> Unit,
-    onSelectRoute: (RealStreetRoute) -> Unit, // 🟢 Recibe el objeto con la ruta seleccionada
+    onOpenEmergency: (Double, Double) -> Unit,
+    onSelectRoute: (RealStreetRoute) -> Unit,
     onChangeMobility: (String) -> Unit
 ) {
     var selectedTabIndex by remember { mutableIntStateOf(0) }
@@ -219,10 +229,15 @@ fun MainTabsContainer(
                 .padding(innerPadding)
         ) {
             when (selectedTabIndex) {
-                0 -> MapScreen(onFindRoute = onOpenEmergency)
+                0 -> MapScreen(
+                    onFindRoute = {
+                        // 🟢 Como MapScreen no devuelve parámetros, enviamos los valores base aquí
+                        onOpenEmergency(1500.0, 300.0)
+                    }
+                )
                 1 -> RoutesScreen(
                     mobilityMode = userMobility,
-                    onSelectRoute = onSelectRoute, // 🟢 Conectado con la función que guarda la ruta
+                    onSelectRoute = onSelectRoute,
                     onChangeMobility = onChangeMobility
                 )
                 2 -> ReportsScreen()
