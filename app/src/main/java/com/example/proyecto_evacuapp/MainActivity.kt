@@ -11,7 +11,6 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ReportProblem
-import androidx.compose.material.icons.filled.Route
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -41,9 +40,7 @@ import com.example.proyecto_evacuapp.ui.screens.InitialSetupScreen
 import com.example.proyecto_evacuapp.ui.screens.MapScreen
 import com.example.proyecto_evacuapp.ui.screens.OnboardingScreen
 import com.example.proyecto_evacuapp.ui.screens.ProfileScreen
-import com.example.proyecto_evacuapp.ui.screens.RealStreetRoute
 import com.example.proyecto_evacuapp.ui.screens.ReportsScreen
-import com.example.proyecto_evacuapp.ui.screens.RoutesScreen
 import com.example.proyecto_evacuapp.ui.screens.SplashScreen
 import com.example.proyecto_evacuapp.ui.screens.StandardNavigationScreen
 import com.example.proyecto_evacuapp.ui.theme.AppBackground
@@ -94,7 +91,6 @@ fun EvacuAppApp() {
     var currentFlow by remember { mutableStateOf(ScreenFlow.SPLASH) }
     var selectedEmergency by remember { mutableStateOf("Terremoto") }
 
-    var selectedRoute by remember { mutableStateOf<RealStreetRoute?>(null) }
     var selectedDestinationName by remember { mutableStateOf("Zona Segura") }
     var selectedDestinationPoint by remember { mutableStateOf(GeoPoint(-33.5925, -70.7045)) }
 
@@ -125,14 +121,6 @@ fun EvacuAppApp() {
                 selectedDestinationName = name
                 selectedDestinationPoint = point
                 currentFlow = ScreenFlow.STANDARD_NAVIGATION
-            },
-            onSelectRoute = { route ->
-                selectedRoute = route
-                selectedDestinationName = route.destination
-                selectedDestinationPoint = route.endPoint
-                currentRouteDistanceMeters = route.distance.toDoubleOrNull() ?: 0.0
-                currentRouteDurationSeconds = (route.distance.toDoubleOrNull() ?: 0.0) / 10.0
-                currentFlow = ScreenFlow.EMERGENCY_SELECT
             },
             onChangeMobility = { userMobilityProfile = it }
         )
@@ -180,13 +168,11 @@ fun MainTabsContainer(
     userMobility: String,
     onOpenEmergency: (Double, Double) -> Unit,
     onStartStandardNav: (String, GeoPoint) -> Unit,
-    onSelectRoute: (RealStreetRoute) -> Unit,
     onChangeMobility: (String) -> Unit
 ) {
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     val tabs = listOf(
         BottomNavTab("Mapa", Icons.Default.Map),
-        BottomNavTab("Rutas", Icons.Default.Route),
         BottomNavTab("Reportes", Icons.Default.ReportProblem),
         BottomNavTab("Alertas", Icons.Default.Notifications),
         BottomNavTab("Perfil", Icons.Default.Person)
@@ -218,7 +204,7 @@ fun MainTabsContainer(
         floatingActionButton = {
             if (selectedTabIndex == 0) {
                 FloatingActionButton(
-                    onClick = { selectedTabIndex = 2 },
+                    onClick = { selectedTabIndex = 1 },
                     containerColor = DangerRed,
                     contentColor = Color.White
                 ) {
@@ -233,29 +219,15 @@ fun MainTabsContainer(
                 .padding(innerPadding)
         ) {
             when (selectedTabIndex) {
-                0 -> MapScreen(
-                    onFindRoute = {
-                        // Este botón mantiene el flujo de emergencia (Rojo/Desastres)
-                        onOpenEmergency(1500.0, 300.0)
-                    }
-                )
-                1 -> RoutesScreen(
-                    mobilityMode = userMobility,
-                    onSelectRoute = { route ->
-                        // Al hacer clic en una ruta de la lista, se abre la navegación estándar de giros
-                        onStartStandardNav(route.destination, route.endPoint)
-                    },
-                    onChangeMobility = { newMobility ->
-                        onChangeMobility(newMobility) // Llamada correcta al callback
-                    }
-                )
-                2 -> ReportsScreen()
-                3 -> AlertsScreen()
-                4 -> ProfileScreen()
+                0 -> MapScreen()
+                1 -> ReportsScreen()
+                2 -> AlertsScreen()
+                3 -> ProfileScreen()
             }
         }
+        }
     }
-}
+
 
 @Preview(showBackground = true, showSystemUi = true)
 @Composable

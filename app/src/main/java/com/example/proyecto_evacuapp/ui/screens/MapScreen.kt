@@ -50,7 +50,7 @@ import org.osmdroid.views.overlay.Polyline
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("MissingPermission")
 @Composable
-fun MapScreen(onFindRoute: () -> Unit) {
+fun MapScreen() {
     var showSosSheet by remember { mutableStateOf(false) }
     var distanceToNextStepMeters by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
@@ -71,11 +71,15 @@ fun MapScreen(onFindRoute: () -> Unit) {
 
     // ESTADOS PARA RUTA Y NAVEGACIÓN ACTIVA
     var customDestination by remember { mutableStateOf<GeoPoint?>(null) }
+    var customDestinationName by remember { mutableStateOf("") }
     var customRoutePoints by remember { mutableStateOf<List<GeoPoint>>(emptyList()) }
     var customDistanceText by remember { mutableStateOf("") }
     var customDurationText by remember { mutableStateOf("") }
     var routeSteps by remember { mutableStateOf<List<StepInstruction>>(emptyList()) }
     var isCalculatingRoute by remember { mutableStateOf(false) }
+    // true = ruta trazada por el botón "EVACUAR" (zona segura automática)
+    // false = ruta trazada manteniendo presionado el mapa (destino personalizado)
+    var isAutomaticEvacuation by remember { mutableStateOf(false) }
 
     // ESTADO DE MODO NAVEGACIÓN "IR"
     var isNavigating by remember { mutableStateOf(false) }
@@ -85,16 +89,22 @@ fun MapScreen(onFindRoute: () -> Unit) {
         isNavigating = false
         currentStepIndex = 0
         customDestination = null
+        customDestinationName = ""
         customRoutePoints = emptyList()
         routeSteps = emptyList()
         customDistanceText = ""
         customDurationText = ""
+        isAutomaticEvacuation = false
         CustomVoicePlayer.stop()
     }
 
     // Calcular ruta vehicular
     // Calcular ruta vehicular (con límite estricto de 15 km para zonas seguras)
-    fun calculateRouteToPoint(targetPoint: GeoPoint) {
+    fun calculateRouteToPoint(
+        targetPoint: GeoPoint,
+        targetName: String = "",
+        automatic: Boolean = false
+    ) {
         val startLat = currentLatitude
         val startLon = currentLongitude
         if (startLat == null || startLon == null) {
@@ -112,26 +122,59 @@ fun MapScreen(onFindRoute: () -> Unit) {
             )
 
             if (result.points.isNotEmpty()) {
-                // OSRM devuelve la distancia en texto (ej. "12.4 km" o "850 m")
-                // Validamos el límite operativo de 15 km (15000 metros)
-                val distanceInMeters = parseDistanceToMeters(result.distanceText)
-
-                if (distanceInMeters > 15000.0) {
-                    Toast.makeText(context, "⚠️ La zona segura supera el radio máximo de 15 km", Toast.LENGTH_LONG).show()
-                    isCalculatingRoute = false
-                    return@launch
-                }
 
                 customDestination = targetPoint
+                customDestinationName = targetName
                 customRoutePoints = result.points
                 customDistanceText = result.distanceText
                 customDurationText = result.durationText
                 routeSteps = result.steps
+                isAutomaticEvacuation = automatic
             } else {
                 Toast.makeText(context, "No se pudo calcular la ruta por calle", Toast.LENGTH_SHORT).show()
             }
             isCalculatingRoute = false
         }
+    }
+
+    // Botón "EVACUAR": elige automáticamente la zona segura recomendada dentro
+    // de 15 km, descartando zonas con incidentes verificados/probables cerca
+    // (ver findRecommendedSafeZone en EmergencyScreens.kt), y traza la ruta
+    // en el propio mapa sin salir de MapScreen.
+    fun startAutomaticEvacuation() {
+        val startLat = currentLatitude
+        val startLon = currentLongitude
+        if (startLat == null || startLon == null) {
+            Toast.makeText(context, "Esperando señal GPS...", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val userPoint = GeoPoint(startLat, startLon)
+        val nearestSafeZone = findRecommendedSafeZone(userPoint)
+
+        if (nearestSafeZone == null) {
+            Toast.makeText(
+                context,
+                "⚠️ No hay zonas seguras registradas dentro de 15 km de tu posición",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        if (isSafeZoneCompromised(nearestSafeZone)) {
+            Toast.makeText(
+                context,
+                "⚠️ La zona más cercana (${nearestSafeZone.name}) tiene reportes activos. Evalúa con precaución.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+
+        isTrackingUser = false
+        calculateRouteToPoint(
+            targetPoint = nearestSafeZone.point,
+            targetName = nearestSafeZone.name,
+            automatic = true
+        )
     }
 
     fun calculateAlternativeRouteAvoidingHazards(
@@ -506,11 +549,22 @@ fun MapScreen(onFindRoute: () -> Unit) {
                     ) {
                         Column {
                             Text(
-                                text = "Ruta vehicular lista",
+                                text = if (isAutomaticEvacuation) {
+                                    "Ruta de evacuación (zona segura)"
+                                } else {
+                                    "Ruta personalizada lista"
+                                },
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = TextPrimary
                             )
+                            if (customDestinationName.isNotBlank()) {
+                                Text(
+                                    text = "Destino: $customDestinationName",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -580,19 +634,19 @@ fun MapScreen(onFindRoute: () -> Unit) {
                         color = TextSecondary
                     )
                     Button(
-                        onClick = onFindRoute,
+                        onClick = { startAutomaticEvacuation() },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp),
                         shape = RoundedCornerShape(16.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = SafeGreen,
+                            containerColor = DangerRed,
                             contentColor = Color.White
                         )
                     ) {
-                        Icon(imageVector = Icons.Default.Route, contentDescription = null)
+                        Icon(imageVector = Icons.Default.Warning, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "ENCONTRAR RUTA SEGURA", fontWeight = FontWeight.Bold)
+                        Text(text = "EVACUAR", fontWeight = FontWeight.Bold)
                     }
                 }
             }

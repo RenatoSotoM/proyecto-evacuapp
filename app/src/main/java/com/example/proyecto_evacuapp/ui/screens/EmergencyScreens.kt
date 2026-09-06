@@ -55,9 +55,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.example.proyecto_evacuapp.R
+import androidx.lifecycle.viewModelScope
 import com.example.proyecto_evacuapp.ui.components.UserLocationState
+import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
+import com.example.proyecto_evacuapp.ui.components.IncidentStatus
 import com.example.proyecto_evacuapp.ui.theme.AppBackground
 import com.example.proyecto_evacuapp.ui.theme.DangerRed
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlue
@@ -74,6 +77,9 @@ import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.osmdroid.config.Configuration
@@ -92,6 +98,81 @@ data class EmergencySafeZone(
     val riskLevel: String = "Bajo"
 )
 
+class EmergencyViewModel : ViewModel() {
+    private val _userLocation = MutableStateFlow<GeoPoint?>(null)
+    val userLocation: StateFlow<GeoPoint?> = _userLocation
+
+    private val _safeZones = MutableStateFlow<List<EmergencySafeZone>>(emptyList())
+    val safeZones: StateFlow<List<EmergencySafeZone>> = _safeZones
+
+    val searchRadiusMeters = 15000.0
+
+    fun onLocationChanged(newPoint: GeoPoint) {
+        _userLocation.value = newPoint
+        fetchSafeZonesFromOverpass(newPoint.latitude, newPoint.longitude, searchRadiusMeters)
+    }
+
+    private fun fetchSafeZonesFromOverpass(lat: Double, lon: Double, radius: Double) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val query = """
+                    [out:json][timeout:25];
+                    (
+                      node["emergency"="assembly_point"](around:$radius,$lat,$lon);
+                      way["emergency"="assembly_point"](around:$radius,$lat,$lon);
+                      node["amenity"="shelter"](around:$radius,$lat,$lon);
+                      way["amenity"="shelter"](around:$radius,$lat,$lon);
+                    );
+                    out body;
+                    >;
+                    out skel qt;
+                """.trimIndent()
+
+                val url = URL("https://overpass-api.de/api/interpreter")
+                val connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = 10000
+                    readTimeout = 10000
+                    setRequestProperty("Content-Type", "text/plain; charset=utf-8")
+                }
+
+                connection.outputStream.use { it.write(query.toByteArray(Charsets.UTF_8)) }
+
+                if (connection.responseCode == 200) {
+                    val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                    val json = JSONObject(responseText)
+                    val elements = json.optJSONArray("elements") ?: return@launch
+
+                    val parsedZones = mutableListOf<EmergencySafeZone>()
+                    for (i in 0 until elements.length()) {
+                        val el = elements.getJSONObject(i)
+                        val elLat = el.optDouble("lat", Double.NaN)
+                        val elLon = el.optDouble("lon", Double.NaN)
+                        if (!elLat.isNaN() && !elLon.isNaN()) {
+                            val tags = el.optJSONObject("tags")
+                            val name = tags?.optString("name") ?: tags?.optString("emergency") ?: "Zona Segura OSM"
+                            parsedZones.add(EmergencySafeZone(name = name, point = GeoPoint(elLat, elLon)))
+                        }
+                    }
+                    _safeZones.value = parsedZones
+                }
+            } catch (e: Exception) {
+                Log.e("OVERPASS", "Error al buscar zonas seguras: ${e.localizedMessage}")
+            }
+        }
+    }
+}
+
+fun findRecommendedSafeZone(userPoint: GeoPoint): EmergencySafeZone? {
+    if (safeZoneCandidates.isEmpty()) return null
+
+    val uncompromisedCandidates = safeZoneCandidates.filterNot { isSafeZoneCompromised(it) }
+    val pool = uncompromisedCandidates.ifEmpty { safeZoneCandidates }
+
+    return pool.minByOrNull { userPoint.distanceToAsDouble(it.point) }
+}
+
 val safeZoneCandidates = listOf(
     EmergencySafeZone("Parque García de la Huerta", GeoPoint(-33.5925, -70.7045)),
     EmergencySafeZone("Estadio Municipal de San Bernardo", GeoPoint(-33.5980, -70.7010)),
@@ -100,6 +181,18 @@ val safeZoneCandidates = listOf(
     EmergencySafeZone("Parque O'Higgins", GeoPoint(-33.4638, -70.6610)),
     EmergencySafeZone("Parque Metropolitano", GeoPoint(-33.4250, -70.6330))
 )
+
+const val SAFE_ZONE_SEARCH_RADIUS_METERS = 15000.0
+private const val SAFE_ZONE_HAZARD_PROXIMITY_METERS = 700.0
+
+fun isSafeZoneCompromised(zone: EmergencySafeZone): Boolean {
+    return IncidentSharedState.incidents.any { incident ->
+        (incident.status == IncidentStatus.VERIFIED || incident.status == IncidentStatus.PROBABLE) &&
+                zone.point.distanceToAsDouble(
+                    GeoPoint(incident.latitude, incident.longitude)
+                ) <= SAFE_ZONE_HAZARD_PROXIMITY_METERS
+    }
+}
 
 suspend fun fetchOSRMRoute(
     start: GeoPoint,
@@ -232,9 +325,7 @@ fun EmergencyActiveScreen(
     val userPoint = UserLocationState.currentLocation ?: GeoPoint(-33.5925, -70.7045)
     val hasCustomDestination = selectedDestinationName.isNotBlank() && selectedDestinationName != "Zona Segura"
 
-    val maxRadiusMeters = 20000.0
-    val safeZonesInRange = safeZoneCandidates.filter { userPoint.distanceToAsDouble(it.point) <= maxRadiusMeters }
-    val nearestSafeZone = safeZonesInRange.minByOrNull { userPoint.distanceToAsDouble(it.point) } ?: safeZoneCandidates.first()
+    val nearestSafeZone = findRecommendedSafeZone(userPoint) ?: safeZoneCandidates.first()
 
     val finalDestinationName = if (hasCustomDestination) selectedDestinationName else nearestSafeZone.name
     val finalDestinationPoint = if (hasCustomDestination) selectedDestinationPoint else nearestSafeZone.point
@@ -321,23 +412,51 @@ fun ActiveNavigationScreen(
     destinationPoint: GeoPoint = GeoPoint(-33.5925, -70.7045),
     mobilityMode: String = "Vehículo",
     fullPolyline: List<GeoPoint> = emptyList(),
+    isCustomRoute: Boolean = false,
     onFinish: () -> Unit
 ) {
     val context = LocalContext.current
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
+
+    val sensorManager = remember { context.getSystemService(android.content.Context.SENSOR_SERVICE) as android.hardware.SensorManager }
+    var deviceHeading by remember { mutableDoubleStateOf(0.0) }
+
     var currentPoint by remember {
         mutableStateOf(UserLocationState.currentLocation ?: GeoPoint(-33.5925, -70.7045))
     }
-    var currentBearing by remember { mutableDoubleStateOf(0.0) }
     var remainingDistanceMeters by remember { mutableDoubleStateOf(0.0) }
     var routePolylinePoints by remember { mutableStateOf(fullPolyline) }
 
-    var turnInstruction by remember { mutableStateOf("Siga recto hacia la zona segura") }
+    var turnInstruction by remember { mutableStateOf("Siga recto hacia el destino") }
     var turnIconType by remember { mutableStateOf("straight") }
 
     DisposableEffect(context) {
         onDispose {
             CustomVoicePlayer.stop()
+        }
+    }
+
+    DisposableEffect(sensorManager) {
+        val rotationSensor = sensorManager.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR)
+        val listener = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(event: android.hardware.SensorEvent) {
+                if (event.sensor.type == android.hardware.Sensor.TYPE_ROTATION_VECTOR) {
+                    val rotationMatrix = FloatArray(9)
+                    android.hardware.SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                    val orientationValues = FloatArray(3)
+                    android.hardware.SensorManager.getOrientation(rotationMatrix, orientationValues)
+                    var azimuth = Math.toDegrees(orientationValues[0].toDouble())
+                    if (azimuth < 0) azimuth += 360.0
+                    deviceHeading = azimuth
+                }
+            }
+            override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) {}
+        }
+        rotationSensor?.let {
+            sensorManager.registerListener(listener, it, android.hardware.SensorManager.SENSOR_DELAY_UI)
+        }
+        onDispose {
+            sensorManager.unregisterListener(listener)
         }
     }
 
@@ -366,8 +485,11 @@ fun ActiveNavigationScreen(
                 if (turnInstruction != newInstruction) {
                     turnInstruction = newInstruction
                     turnIconType = newType
-                    val audioResId = CustomVoicePlayer.getAudioForStep(newType)
-                    CustomVoicePlayer.playAudio(context, audioResId)
+
+                    if (!isCustomRoute) {
+                        val audioResId = CustomVoicePlayer.getAudioForStep(newType)
+                        CustomVoicePlayer.playAudio(context, audioResId)
+                    }
                 }
             }
         }
@@ -383,7 +505,6 @@ fun ActiveNavigationScreen(
                     val newPoint = GeoPoint(loc.latitude, loc.longitude)
                     currentPoint = newPoint
                     UserLocationState.currentLocation = newPoint
-                    currentBearing = loc.bearing.toDouble()
                     remainingDistanceMeters = newPoint.distanceToAsDouble(destinationPoint)
                 }
             }
@@ -476,7 +597,7 @@ fun ActiveNavigationScreen(
                 ) {
                     ActiveNavigationMapOSM(
                         currentPoint = currentPoint,
-                        bearing = currentBearing,
+                        bearing = deviceHeading,
                         destinationPoint = destinationPoint,
                         destinationName = destinationName,
                         fullPolyline = routePolylinePoints
@@ -590,6 +711,7 @@ fun ActiveNavigationMapOSM(
         }
 
         holder.routePolyline.setPoints(remainingPath)
+        holder.mapView.setMapOrientation(-bearing.toFloat())
         holder.mapView.controller.animateTo(currentPoint)
         holder.mapView.invalidate()
     }
