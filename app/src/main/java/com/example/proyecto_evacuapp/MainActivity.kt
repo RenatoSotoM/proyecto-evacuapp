@@ -1,5 +1,5 @@
 package com.example.proyecto_evacuapp
-// Actualizacion en rutas, ahora muestra ubicacion real al iniciar ruta
+
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -41,10 +41,11 @@ import com.example.proyecto_evacuapp.ui.screens.InitialSetupScreen
 import com.example.proyecto_evacuapp.ui.screens.MapScreen
 import com.example.proyecto_evacuapp.ui.screens.OnboardingScreen
 import com.example.proyecto_evacuapp.ui.screens.ProfileScreen
-import com.example.proyecto_evacuapp.ui.screens.RealStreetRoute // 🟢 Importación agregada
+import com.example.proyecto_evacuapp.ui.screens.RealStreetRoute
 import com.example.proyecto_evacuapp.ui.screens.ReportsScreen
 import com.example.proyecto_evacuapp.ui.screens.RoutesScreen
 import com.example.proyecto_evacuapp.ui.screens.SplashScreen
+import com.example.proyecto_evacuapp.ui.screens.StandardNavigationScreen
 import com.example.proyecto_evacuapp.ui.theme.AppBackground
 import com.example.proyecto_evacuapp.ui.theme.DangerRed
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlue
@@ -84,7 +85,8 @@ private enum class ScreenFlow {
     MAIN_TABS,
     EMERGENCY_SELECT,
     EMERGENCY_ACTIVE,
-    ACTIVE_NAVIGATION
+    ACTIVE_NAVIGATION,
+    STANDARD_NAVIGATION
 }
 
 @Composable
@@ -92,14 +94,10 @@ fun EvacuAppApp() {
     var currentFlow by remember { mutableStateOf(ScreenFlow.SPLASH) }
     var selectedEmergency by remember { mutableStateOf("Terremoto") }
 
-    // 🟢 ESTADO GLOBAL PARA ALMACENAR LA RUTA SELECCIONADA EN "RUTAS"
     var selectedRoute by remember { mutableStateOf<RealStreetRoute?>(null) }
-
-    // ESTADOS PARA GUARDAR LA ZONA SEGURA Y COORDENADAS SELECCIONADAS
     var selectedDestinationName by remember { mutableStateOf("Zona Segura") }
     var selectedDestinationPoint by remember { mutableStateOf(GeoPoint(-33.5925, -70.7045)) }
 
-    // Perfil de movilidad y acompañantes seleccionado en onboarding/setup
     var userMobilityProfile by remember { mutableStateOf("Vehículo") }
     var userCompanions by remember { mutableStateOf(setOf("Solo")) }
 
@@ -123,16 +121,17 @@ fun EvacuAppApp() {
                 currentRouteDurationSeconds = duration
                 currentFlow = ScreenFlow.EMERGENCY_SELECT
             },
+            onStartStandardNav = { name, point ->
+                selectedDestinationName = name
+                selectedDestinationPoint = point
+                currentFlow = ScreenFlow.STANDARD_NAVIGATION
+            },
             onSelectRoute = { route ->
                 selectedRoute = route
                 selectedDestinationName = route.destination
                 selectedDestinationPoint = route.endPoint
                 currentRouteDistanceMeters = route.distance.toDoubleOrNull() ?: 0.0
-
-                // 🟢 Ajusta 'duration' por el nombre real de la propiedad en tu objeto RealStreetRoute
-                // Por ejemplo, si es route.durationSeconds o si prefieres calcularlo de forma estimada:
-                currentRouteDurationSeconds = (route.distance.toDoubleOrNull() ?: 0.0) / 10.0 // Estimación de velocidad si no existe el campo
-
+                currentRouteDurationSeconds = (route.distance.toDoubleOrNull() ?: 0.0) / 10.0
                 currentFlow = ScreenFlow.EMERGENCY_SELECT
             },
             onChangeMobility = { userMobilityProfile = it }
@@ -148,7 +147,6 @@ fun EvacuAppApp() {
             emergencyType = selectedEmergency,
             selectedDestinationName = selectedDestinationName,
             selectedDestinationPoint = selectedDestinationPoint,
-
             routeDistanceMeters = currentRouteDistanceMeters,
             routeDurationSeconds = currentRouteDurationSeconds,
             onStartNavigation = { destinationName, destinationPoint ->
@@ -166,16 +164,22 @@ fun EvacuAppApp() {
             mobilityMode = userMobilityProfile,
             onFinish = { currentFlow = ScreenFlow.MAIN_TABS }
         )
+        ScreenFlow.STANDARD_NAVIGATION -> StandardNavigationScreen(
+            destinationName = selectedDestinationName,
+            destinationPoint = selectedDestinationPoint,
+            mobilityMode = userMobilityProfile,
+            onFinish = { currentFlow = ScreenFlow.MAIN_TABS }
+        )
     }
 }
 
 data class BottomNavTab(val label: String, val icon: ImageVector)
 
-// Modifica MainTabsContainer para que acepte distancia y duración reales desde el Mapa
 @Composable
 fun MainTabsContainer(
     userMobility: String,
     onOpenEmergency: (Double, Double) -> Unit,
+    onStartStandardNav: (String, GeoPoint) -> Unit,
     onSelectRoute: (RealStreetRoute) -> Unit,
     onChangeMobility: (String) -> Unit
 ) {
@@ -231,14 +235,19 @@ fun MainTabsContainer(
             when (selectedTabIndex) {
                 0 -> MapScreen(
                     onFindRoute = {
-                        // 🟢 Como MapScreen no devuelve parámetros, enviamos los valores base aquí
+                        // Este botón mantiene el flujo de emergencia (Rojo/Desastres)
                         onOpenEmergency(1500.0, 300.0)
                     }
                 )
                 1 -> RoutesScreen(
                     mobilityMode = userMobility,
-                    onSelectRoute = onSelectRoute,
-                    onChangeMobility = onChangeMobility
+                    onSelectRoute = { route ->
+                        // Al hacer clic en una ruta de la lista, se abre la navegación estándar de giros
+                        onStartStandardNav(route.destination, route.endPoint)
+                    },
+                    onChangeMobility = { newMobility ->
+                        onChangeMobility(newMobility) // Llamada correcta al callback
+                    }
                 )
                 2 -> ReportsScreen()
                 3 -> AlertsScreen()
