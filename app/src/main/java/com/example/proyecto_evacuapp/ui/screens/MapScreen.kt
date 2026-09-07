@@ -1,6 +1,7 @@
 package com.example.proyecto_evacuapp.ui.screens
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
@@ -47,10 +48,37 @@ import org.osmdroid.views.overlay.MapEventsOverlay
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 
+// Funciones de formato de código abierto (Estilo Waze / Maps basado en velocidad real)
+private fun formatDistance(meters: Double): String {
+    return if (meters < 1000) {
+        "${meters.toInt()} m"
+    } else {
+        String.format(java.util.Locale.US, "%.1f km", meters / 1000.0)
+    }
+}
+
+private fun formatDuration(meters: Double, speedMetersPerSecond: Double): String {
+    // Si el vehículo está detenido o la velocidad es muy baja, usamos flujo urbano base (~25 km/h = 6.94 m/s)
+    // Si va en movimiento, usamos la velocidad instantánea del GPS para recalcular el tiempo real.
+    val effectiveSpeed = if (speedMetersPerSecond > 1.5) speedMetersPerSecond else 6.94
+    val seconds = (meters / effectiveSpeed).toInt()
+    val minutes = (seconds + 29) / 60 // Redondeo matemático correcto al minuto más cercano
+
+    return when {
+        minutes < 1 -> "Menos de 1 min"
+        minutes == 1 -> "1 min"
+        minutes < 60 -> "$minutes min"
+        else -> "${minutes / 60} h ${minutes % 60} min"
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("MissingPermission")
 @Composable
 fun MapScreen() {
+    var lastGeoPoint: GeoPoint? = null
+    var currentAnimator: ValueAnimator? = null
+
     var showSosSheet by remember { mutableStateOf(false) }
     var distanceToNextStepMeters by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
@@ -61,6 +89,7 @@ fun MapScreen() {
     var isTrackingUser by remember { mutableStateOf(true) }
     var currentLatitude by remember { mutableStateOf<Double?>(null) }
     var currentLongitude by remember { mutableStateOf<Double?>(null) }
+    var currentSpeedMps by remember { mutableStateOf(0.0) } // <--- Velocidad instantánea del GPS (m/s)
     var recenterTrigger by remember { mutableIntStateOf(0) }
     var hasLocationPermission by remember {
         mutableStateOf(
@@ -77,9 +106,21 @@ fun MapScreen() {
     var customDurationText by remember { mutableStateOf("") }
     var routeSteps by remember { mutableStateOf<List<StepInstruction>>(emptyList()) }
     var isCalculatingRoute by remember { mutableStateOf(false) }
-    // true = ruta trazada por el botón "EVACUAR" (zona segura automática)
-    // false = ruta trazada manteniendo presionado el mapa (destino personalizado)
     var isAutomaticEvacuation by remember { mutableStateOf(false) }
+
+    // CÁLCULO DINÁMICO ESTILO WAZE / MAPS (Basado en distancia restante + velocidad del sensor GPS)
+    val dynamicRemainingDistanceMeters by remember(currentLatitude, currentLongitude, customRoutePoints) {
+        derivedStateOf {
+            if (currentLatitude == null || currentLongitude == null || customRoutePoints.isEmpty()) {
+                0.0
+            } else {
+                val userPoint = GeoPoint(currentLatitude!!, currentLongitude!!)
+                userPoint.distanceToAsDouble(customRoutePoints.last())
+            }
+        }
+    }
+    val dynamicDistanceText = formatDistance(dynamicRemainingDistanceMeters)
+    val dynamicDurationText = formatDuration(dynamicRemainingDistanceMeters, currentSpeedMps)
 
     // ESTADO DE MODO NAVEGACIÓN "IR"
     var isNavigating by remember { mutableStateOf(false) }
@@ -98,8 +139,6 @@ fun MapScreen() {
         CustomVoicePlayer.stop()
     }
 
-    // Calcular ruta vehicular
-    // Calcular ruta vehicular (con límite estricto de 15 km para zonas seguras)
     fun calculateRouteToPoint(
         targetPoint: GeoPoint,
         targetName: String = "",
@@ -122,7 +161,6 @@ fun MapScreen() {
             )
 
             if (result.points.isNotEmpty()) {
-
                 customDestination = targetPoint
                 customDestinationName = targetName
                 customRoutePoints = result.points
@@ -137,10 +175,6 @@ fun MapScreen() {
         }
     }
 
-    // Botón "EVACUAR": elige automáticamente la zona segura recomendada dentro
-    // de 15 km, descartando zonas con incidentes verificados/probables cerca
-    // (ver findRecommendedSafeZone en EmergencyScreens.kt), y traza la ruta
-    // en el propio mapa sin salir de MapScreen.
     fun startAutomaticEvacuation() {
         val startLat = currentLatitude
         val startLon = currentLongitude
@@ -177,83 +211,31 @@ fun MapScreen() {
         )
     }
 
-    fun calculateAlternativeRouteAvoidingHazards(
-        start: GeoPoint,
-        end: GeoPoint,
-        blockedPoints: List<GeoPoint>
-    ) {
-        isCalculatingRoute = true
-        coroutineScope.launch {
-            val result = OsrmRoutingService.fetchRealStreetRouteWithAvoidance(
-                start = start,
-                end = end,
-                avoidPoints = blockedPoints,
-                profile = "Vehiculo"
-            )
-            if (result.points.isNotEmpty()) {
-                customRoutePoints = result.points
-                customDistanceText = result.distanceText
-                customDurationText = result.durationText
-                routeSteps = result.steps
-            } else {
-                Toast.makeText(context, "No se encontró ruta alternativa", Toast.LENGTH_SHORT).show()
-            }
-            isCalculatingRoute = false
-        }
-    }
-
-    fun onHazardReportReceived(hazardPoint: GeoPoint, activeHazards: MutableState<List<GeoPoint>>) {
-        activeHazards.value = activeHazards.value + hazardPoint
-
-        if (customDestination != null && currentLatitude != null && currentLongitude != null) {
-            Toast.makeText(context, "⚠️ Incidente en ruta. Buscando vía alternativa...", Toast.LENGTH_LONG).show()
-
-            // Puedes usar un audio existente o eliminar esta línea si no tienes el archivo raw creado
-            CustomVoicePlayer.playAudio(context, R.raw.inicio_evacuacion)
-
-            calculateAlternativeRouteAvoidingHazards(
-                start = GeoPoint(currentLatitude!!, currentLongitude!!),
-                end = customDestination!!,
-                blockedPoints = activeHazards.value
-            )
-        }
-    }
-
-    // Función auxiliar para convertir el texto de OSRM a metros para la validación
-    fun parseDistanceToMeters(distanceText: String): Double {
-        return try {
-            val cleanText = distanceText.lowercase().replace(",", ".")
-            when {
-                cleanText.contains("km") -> cleanText.replace("km", "").trim().toDouble() * 1000.0
-                cleanText.contains("m") -> cleanText.replace("m", "").trim().toDouble()
-                else -> 0.0
-            }
-        } catch (e: Exception) {
-            0.0
-        }
-    }
-
-    // SEGUIMIENTO GPS Y AVANCE AUTOMÁTICO
+    // SEGUIMIENTO GPS, VELOCIDAD EN TIEMPO REAL Y AVANCE AUTOMÁTICO
     val locationCallback = remember {
         object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let { location ->
                     currentLatitude = location.latitude
                     currentLongitude = location.longitude
-                    UserLocationState.currentLocation = GeoPoint(location.latitude, location.longitude)
+
+                    // Capturamos la velocidad actual entregada por el sensor del dispositivo
+                    if (location.hasSpeed()) {
+                        currentSpeedMps = location.speed.toDouble()
+                    }
+
+                    val newGeoPoint = GeoPoint(location.latitude, location.longitude)
+                    UserLocationState.currentLocation = newGeoPoint
 
                     if (isNavigating && routeSteps.isNotEmpty() && currentStepIndex < routeSteps.size) {
                         val currentStep = routeSteps[currentStepIndex]
-                        val userGeo = GeoPoint(location.latitude, location.longitude)
-                        val distanceToStep = userGeo.distanceToAsDouble(currentStep.location)
+                        val distanceToStep = newGeoPoint.distanceToAsDouble(currentStep.location)
                         distanceToNextStepMeters = distanceToStep.toInt()
 
-                        val speedMetersPerSecond = if (location.hasSpeed()) location.speed.toDouble() else 0.0
-                        val speedKmH = speedMetersPerSecond * 3.6
-
+                        val speedKmH = currentSpeedMps * 3.6
                         val triggerDistanceMeters = when {
-                            speedKmH >= 60.0 -> speedMetersPerSecond * 15.0
-                            speedKmH >= 30.0 -> speedMetersPerSecond * 12.0
+                            speedKmH >= 60.0 -> currentSpeedMps * 15.0
+                            speedKmH >= 30.0 -> currentSpeedMps * 12.0
                             else -> 30.0
                         }
 
@@ -278,6 +260,7 @@ fun MapScreen() {
                     if (location != null) {
                         currentLatitude = location.latitude
                         currentLongitude = location.longitude
+                        if (location.hasSpeed()) currentSpeedMps = location.speed.toDouble()
                         UserLocationState.currentLocation = GeoPoint(location.latitude, location.longitude)
                     }
                     recenterTrigger++
@@ -318,7 +301,6 @@ fun MapScreen() {
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // MAPA
         MapViewOSM(
             latitude = currentLatitude,
             longitude = currentLongitude,
@@ -335,14 +317,12 @@ fun MapScreen() {
             }
         )
 
-        // COLUMNA DE BOTONES FLOTANTES
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(bottom = 90.dp, end = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // BOTÓN SOS MESHTATIC
             FloatingActionButton(
                 onClick = { showSosSheet = true },
                 containerColor = Color(0xFFD32F2F),
@@ -434,7 +414,6 @@ fun MapScreen() {
                 }
             }
         } else {
-            // BARRA SUPERIOR NORMAL CUANDO NO SE ESTÁ NAVEGANDO
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -462,7 +441,6 @@ fun MapScreen() {
             }
         }
 
-        // INDICADOR DE CARGA
         if (isCalculatingRoute) {
             CircularProgressIndicator(
                 modifier = Modifier.align(Alignment.Center),
@@ -470,7 +448,6 @@ fun MapScreen() {
             )
         }
 
-        // BOTÓN RECENTRAR MAPA
         FloatingActionButton(
             onClick = {
                 isTrackingUser = true
@@ -504,7 +481,6 @@ fun MapScreen() {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (isNavigating) {
-                    // PANEL DURANTE MODO NAVEGACIÓN "IR"
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -518,7 +494,7 @@ fun MapScreen() {
                                 color = TextPrimary
                             )
                             Text(
-                                text = "Distancia: $customDistanceText | Tiempo: $customDurationText",
+                                text = "Distancia: $dynamicDistanceText | Tiempo: $dynamicDurationText",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = SafeGreen
@@ -541,7 +517,6 @@ fun MapScreen() {
                         Text(text = "DETENER NAVEGACIÓN", fontWeight = FontWeight.Bold)
                     }
                 } else if (customDestination != null) {
-                    // PANEL DE PREVIA DE RUTA TRAZADA (IR / CANCELAR)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -549,11 +524,7 @@ fun MapScreen() {
                     ) {
                         Column {
                             Text(
-                                text = if (isAutomaticEvacuation) {
-                                    "Ruta de evacuación (zona segura)"
-                                } else {
-                                    "Ruta personalizada lista"
-                                },
+                                text = if (isAutomaticEvacuation) "Ruta de evacuación (zona segura)" else "Ruta personalizada lista",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = TextPrimary
@@ -575,7 +546,7 @@ fun MapScreen() {
                                     tint = EvacuBlue
                                 )
                                 Text(
-                                    text = if (customDistanceText.isNotEmpty()) "$customDistanceText ($customDurationText)" else "Midiendo...",
+                                    text = if (customRoutePoints.isNotEmpty()) "$dynamicDistanceText ($dynamicDurationText)" else "Midiendo...",
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = EvacuBlue
@@ -621,7 +592,6 @@ fun MapScreen() {
                         }
                     }
                 } else {
-                    // PANEL POR DEFECTO
                     Text(
                         text = "¿Necesitas evacuar?",
                         style = MaterialTheme.typography.titleLarge,
@@ -765,44 +735,3 @@ private data class Quadruple<A, B, C, D>(
     val third: C,
     val fourth: D
 )
-
-fun setupRouteMarkers(
-    mapView: MapView,
-    startPoint: GeoPoint,
-    endPoint: GeoPoint
-) {
-    val context = mapView.context
-    mapView.overlays.removeAll { it is Marker }
-
-    val startMarker = Marker(mapView).apply {
-        position = startPoint
-        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-        title = "Punto de Origen (Tú)"
-        icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_myplaces)
-    }
-
-    val endMarker = Marker(mapView).apply {
-        position = endPoint
-        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-        title = "Zona Segura de Evacuación"
-        icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_compass)
-    }
-
-    mapView.overlays.add(startMarker)
-    mapView.overlays.add(endMarker)
-    mapView.invalidate()
-}
-
-// Función auxiliar para convertir el texto de OSRM a metros para la validación de los 15 km
-private fun parseDistanceToMeters(distanceText: String): Double {
-    return try {
-        val cleanText = distanceText.lowercase().replace(",", ".")
-        when {
-            cleanText.contains("km") -> cleanText.replace("km", "").trim().toDouble() * 1000.0
-            cleanText.contains("m") -> cleanText.replace("m", "").trim().toDouble()
-            else -> 0.0
-        }
-    } catch (e: Exception) {
-        0.0
-    }
-}
