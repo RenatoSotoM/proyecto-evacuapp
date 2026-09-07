@@ -35,6 +35,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -217,54 +218,51 @@ private fun SetupMobilityContent(
     selectedMobility: String,
     onSelectMobility: (String) -> Unit
 ) {
-    val options = listOf(
-        "A pie" to "🚶",
-        "Vehículo" to "🚗",
-        "Bicicleta" to "🚲",
-        "Movilidad reducida" to "♿"
-    )
+    // Fijado exclusivamente para vehículos por el momento
+    LaunchedEffect(Unit) {
+        onSelectMobility("Vehículo")
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(
-            text = "¿Cómo te desplazas habitualmente?",
+            text = "Modo de desplazamiento",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
             color = TextPrimary
         )
 
-        options.chunked(2).forEach { row ->
+        Text(
+            text = "El sistema está configurado para enrutamiento vehicular optimizado en red vial.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = TextSecondary
+        )
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = EvacuBlueLight),
+            border = BorderStroke(2.dp, color = EvacuBlue)
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                row.forEach { (name, emoji) ->
-                    Card(
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (selectedMobility == name) EvacuBlueLight else SurfaceWhite
-                        ),
-                        border = BorderStroke(
-                            width = if (selectedMobility == name) 2.dp else 1.dp,
-                            color = if (selectedMobility == name) EvacuBlue else OutlineColor
-                        ),
-                        onClick = { onSelectMobility(name) }
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp, horizontal = 12.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(text = emoji, style = MaterialTheme.typography.headlineMedium)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = name,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = TextPrimary,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
+                Text(text = "🚗", style = MaterialTheme.typography.headlineMedium)
+                Spacer(modifier = Modifier.width(16.dp))
+                Column {
+                    Text(
+                        text = "Vehículo",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = "Modo principal activo",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
                 }
             }
         }

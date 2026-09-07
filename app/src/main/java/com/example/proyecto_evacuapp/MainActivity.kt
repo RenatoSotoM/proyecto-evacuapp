@@ -11,7 +11,6 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ReportProblem
-import androidx.compose.material.icons.filled.Route
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -42,8 +41,8 @@ import com.example.proyecto_evacuapp.ui.screens.MapScreen
 import com.example.proyecto_evacuapp.ui.screens.OnboardingScreen
 import com.example.proyecto_evacuapp.ui.screens.ProfileScreen
 import com.example.proyecto_evacuapp.ui.screens.ReportsScreen
-import com.example.proyecto_evacuapp.ui.screens.RoutesScreen
 import com.example.proyecto_evacuapp.ui.screens.SplashScreen
+import com.example.proyecto_evacuapp.ui.screens.StandardNavigationScreen
 import com.example.proyecto_evacuapp.ui.theme.AppBackground
 import com.example.proyecto_evacuapp.ui.theme.DangerRed
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlue
@@ -83,7 +82,8 @@ private enum class ScreenFlow {
     MAIN_TABS,
     EMERGENCY_SELECT,
     EMERGENCY_ACTIVE,
-    ACTIVE_NAVIGATION
+    ACTIVE_NAVIGATION,
+    STANDARD_NAVIGATION
 }
 
 @Composable
@@ -91,13 +91,14 @@ fun EvacuAppApp() {
     var currentFlow by remember { mutableStateOf(ScreenFlow.SPLASH) }
     var selectedEmergency by remember { mutableStateOf("Terremoto") }
 
-    // 🟢 ESTADOS AGREGADOS PARA GUARDAR LA ZONA SEGURA SELECCIONADA
     var selectedDestinationName by remember { mutableStateOf("Zona Segura") }
     var selectedDestinationPoint by remember { mutableStateOf(GeoPoint(-33.5925, -70.7045)) }
 
-    // Perfil de movilidad y acompañantes seleccionado en onboarding/setup
     var userMobilityProfile by remember { mutableStateOf("Vehículo") }
     var userCompanions by remember { mutableStateOf(setOf("Solo")) }
+
+    var currentRouteDistanceMeters by remember { mutableStateOf<Double?>(null) }
+    var currentRouteDurationSeconds by remember { mutableStateOf<Double?>(null) }
 
     when (currentFlow) {
         ScreenFlow.SPLASH -> SplashScreen(onContinue = { currentFlow = ScreenFlow.ONBOARDING })
@@ -111,7 +112,16 @@ fun EvacuAppApp() {
         )
         ScreenFlow.MAIN_TABS -> MainTabsContainer(
             userMobility = userMobilityProfile,
-            onOpenEmergency = { currentFlow = ScreenFlow.EMERGENCY_SELECT },
+            onOpenEmergency = { distance, duration ->
+                currentRouteDistanceMeters = distance
+                currentRouteDurationSeconds = duration
+                currentFlow = ScreenFlow.EMERGENCY_SELECT
+            },
+            onStartStandardNav = { name, point ->
+                selectedDestinationName = name
+                selectedDestinationPoint = point
+                currentFlow = ScreenFlow.STANDARD_NAVIGATION
+            },
             onChangeMobility = { userMobilityProfile = it }
         )
         ScreenFlow.EMERGENCY_SELECT -> EmergencyTypeSelectScreen(
@@ -123,15 +133,26 @@ fun EvacuAppApp() {
         )
         ScreenFlow.EMERGENCY_ACTIVE -> EmergencyActiveScreen(
             emergencyType = selectedEmergency,
+            selectedDestinationName = selectedDestinationName,
+            selectedDestinationPoint = selectedDestinationPoint,
+            routeDistanceMeters = currentRouteDistanceMeters,
+            routeDurationSeconds = currentRouteDurationSeconds,
             onStartNavigation = { destinationName, destinationPoint ->
-                // 🟢 SE GUARDAN LOS DATOS DEL DESTINO Y SE CAMBIA EL FLUJO
-                selectedDestinationName = destinationName
-                selectedDestinationPoint = destinationPoint
+                if (destinationName.isNotBlank() && destinationName != "Zona Segura") {
+                    selectedDestinationName = destinationName
+                    selectedDestinationPoint = destinationPoint
+                }
                 currentFlow = ScreenFlow.ACTIVE_NAVIGATION
             },
             onBack = { currentFlow = ScreenFlow.EMERGENCY_SELECT }
         )
         ScreenFlow.ACTIVE_NAVIGATION -> ActiveNavigationScreen(
+            destinationName = selectedDestinationName,
+            destinationPoint = selectedDestinationPoint,
+            mobilityMode = userMobilityProfile,
+            onFinish = { currentFlow = ScreenFlow.MAIN_TABS }
+        )
+        ScreenFlow.STANDARD_NAVIGATION -> StandardNavigationScreen(
             destinationName = selectedDestinationName,
             destinationPoint = selectedDestinationPoint,
             mobilityMode = userMobilityProfile,
@@ -145,13 +166,13 @@ data class BottomNavTab(val label: String, val icon: ImageVector)
 @Composable
 fun MainTabsContainer(
     userMobility: String,
-    onOpenEmergency: () -> Unit,
+    onOpenEmergency: (Double, Double) -> Unit,
+    onStartStandardNav: (String, GeoPoint) -> Unit,
     onChangeMobility: (String) -> Unit
 ) {
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     val tabs = listOf(
         BottomNavTab("Mapa", Icons.Default.Map),
-        BottomNavTab("Rutas", Icons.Default.Route),
         BottomNavTab("Reportes", Icons.Default.ReportProblem),
         BottomNavTab("Alertas", Icons.Default.Notifications),
         BottomNavTab("Perfil", Icons.Default.Person)
@@ -183,7 +204,7 @@ fun MainTabsContainer(
         floatingActionButton = {
             if (selectedTabIndex == 0) {
                 FloatingActionButton(
-                    onClick = { selectedTabIndex = 2 },
+                    onClick = { selectedTabIndex = 1 },
                     containerColor = DangerRed,
                     contentColor = Color.White
                 ) {
@@ -198,19 +219,15 @@ fun MainTabsContainer(
                 .padding(innerPadding)
         ) {
             when (selectedTabIndex) {
-                0 -> MapScreen(onFindRoute = onOpenEmergency)
-                1 -> RoutesScreen(
-                    mobilityMode = userMobility,
-                    onSelectRoute = onOpenEmergency,
-                    onChangeMobility = onChangeMobility
-                )
-                2 -> ReportsScreen()
-                3 -> AlertsScreen()
-                4 -> ProfileScreen()
+                0 -> MapScreen()
+                1 -> ReportsScreen()
+                2 -> AlertsScreen()
+                3 -> ProfileScreen()
             }
         }
+        }
     }
-}
+
 
 @Preview(showBackground = true, showSystemUi = true)
 @Composable

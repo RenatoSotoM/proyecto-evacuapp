@@ -1,9 +1,9 @@
 package com.example.proyecto_evacuapp.ui.screens
-// Cambios de rutas actualizadas
-import android.util.Log
+
 import android.annotation.SuppressLint
 import android.graphics.Paint
 import android.os.Looper
+import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,8 +25,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Navigation
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -34,7 +35,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,11 +55,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewModelScope
 import com.example.proyecto_evacuapp.ui.components.UserLocationState
+import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
+import com.example.proyecto_evacuapp.ui.components.IncidentStatus
 import com.example.proyecto_evacuapp.ui.theme.AppBackground
 import com.example.proyecto_evacuapp.ui.theme.DangerRed
-import com.example.proyecto_evacuapp.ui.theme.DangerRedLight
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlue
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlueDark
 import com.example.proyecto_evacuapp.ui.theme.SafeGreen
@@ -67,13 +70,16 @@ import com.example.proyecto_evacuapp.ui.theme.SurfaceWhite
 import com.example.proyecto_evacuapp.ui.theme.TextPrimary
 import com.example.proyecto_evacuapp.ui.theme.TextSecondary
 import com.example.proyecto_evacuapp.ui.theme.WarningAmber
-import com.example.proyecto_evacuapp.ui.theme.WarningAmberLight
+import com.example.proyecto_evacuapp.utils.CustomVoicePlayer
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.osmdroid.config.Configuration
@@ -86,15 +92,86 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 
-// -------------------------------------------------------------
-// MODELO DE DATOS Y CANDIDATOS
-// -------------------------------------------------------------
-
 data class EmergencySafeZone(
     val name: String,
     val point: GeoPoint,
     val riskLevel: String = "Bajo"
 )
+
+class EmergencyViewModel : ViewModel() {
+    private val _userLocation = MutableStateFlow<GeoPoint?>(null)
+    val userLocation: StateFlow<GeoPoint?> = _userLocation
+
+    private val _safeZones = MutableStateFlow<List<EmergencySafeZone>>(emptyList())
+    val safeZones: StateFlow<List<EmergencySafeZone>> = _safeZones
+
+    val searchRadiusMeters = 15000.0
+
+    fun onLocationChanged(newPoint: GeoPoint) {
+        _userLocation.value = newPoint
+        fetchSafeZonesFromOverpass(newPoint.latitude, newPoint.longitude, searchRadiusMeters)
+    }
+
+    private fun fetchSafeZonesFromOverpass(lat: Double, lon: Double, radius: Double) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val query = """
+                    [out:json][timeout:25];
+                    (
+                      node["emergency"="assembly_point"](around:$radius,$lat,$lon);
+                      way["emergency"="assembly_point"](around:$radius,$lat,$lon);
+                      node["amenity"="shelter"](around:$radius,$lat,$lon);
+                      way["amenity"="shelter"](around:$radius,$lat,$lon);
+                    );
+                    out body;
+                    >;
+                    out skel qt;
+                """.trimIndent()
+
+                val url = URL("https://overpass-api.de/api/interpreter")
+                val connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = 10000
+                    readTimeout = 10000
+                    setRequestProperty("Content-Type", "text/plain; charset=utf-8")
+                }
+
+                connection.outputStream.use { it.write(query.toByteArray(Charsets.UTF_8)) }
+
+                if (connection.responseCode == 200) {
+                    val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                    val json = JSONObject(responseText)
+                    val elements = json.optJSONArray("elements") ?: return@launch
+
+                    val parsedZones = mutableListOf<EmergencySafeZone>()
+                    for (i in 0 until elements.length()) {
+                        val el = elements.getJSONObject(i)
+                        val elLat = el.optDouble("lat", Double.NaN)
+                        val elLon = el.optDouble("lon", Double.NaN)
+                        if (!elLat.isNaN() && !elLon.isNaN()) {
+                            val tags = el.optJSONObject("tags")
+                            val name = tags?.optString("name") ?: tags?.optString("emergency") ?: "Zona Segura OSM"
+                            parsedZones.add(EmergencySafeZone(name = name, point = GeoPoint(elLat, elLon)))
+                        }
+                    }
+                    _safeZones.value = parsedZones
+                }
+            } catch (e: Exception) {
+                Log.e("OVERPASS", "Error al buscar zonas seguras: ${e.localizedMessage}")
+            }
+        }
+    }
+}
+
+fun findRecommendedSafeZone(userPoint: GeoPoint): EmergencySafeZone? {
+    if (safeZoneCandidates.isEmpty()) return null
+
+    val uncompromisedCandidates = safeZoneCandidates.filterNot { isSafeZoneCompromised(it) }
+    val pool = uncompromisedCandidates.ifEmpty { safeZoneCandidates }
+
+    return pool.minByOrNull { userPoint.distanceToAsDouble(it.point) }
+}
 
 val safeZoneCandidates = listOf(
     EmergencySafeZone("Parque García de la Huerta", GeoPoint(-33.5925, -70.7045)),
@@ -105,24 +182,28 @@ val safeZoneCandidates = listOf(
     EmergencySafeZone("Parque Metropolitano", GeoPoint(-33.4250, -70.6330))
 )
 
-// -------------------------------------------------------------
-// CONSULTA A API OSRM (OPEN STREET MAP ROUTING GRAPH)
-// -------------------------------------------------------------
+const val SAFE_ZONE_SEARCH_RADIUS_METERS = 15000.0
+private const val SAFE_ZONE_HAZARD_PROXIMITY_METERS = 700.0
 
+fun isSafeZoneCompromised(zone: EmergencySafeZone): Boolean {
+    return IncidentSharedState.incidents.any { incident ->
+        (incident.status == IncidentStatus.VERIFIED || incident.status == IncidentStatus.PROBABLE) &&
+                zone.point.distanceToAsDouble(
+                    GeoPoint(incident.latitude, incident.longitude)
+                ) <= SAFE_ZONE_HAZARD_PROXIMITY_METERS
+    }
+}
 
 suspend fun fetchOSRMRoute(
     start: GeoPoint,
     destination: GeoPoint,
     mobilityMode: String = "Vehículo"
 ): List<GeoPoint> {
-    // Detecta el perfil de OSRM según el modo seleccionado por el usuario
     val osrmProfile = when {
         mobilityMode.contains("Vehí", ignoreCase = true) ||
                 mobilityMode.contains("Auto", ignoreCase = true) -> "driving"
-
         mobilityMode.contains("Bici", ignoreCase = true) -> "bike"
-
-        else -> "foot" // Para "A pie", "Caminando", "Silla de ruedas", etc.
+        else -> "foot"
     }
 
     return withContext(Dispatchers.IO) {
@@ -137,7 +218,7 @@ suspend fun fetchOSRMRoute(
                 requestMethod = "GET"
                 connectTimeout = 8000
                 readTimeout = 8000
-                setRequestProperty("User-Agent", "EvacuApp-UBO-StudentProject/1.0 (contact: evacuapp@ubo.cl)")
+                setRequestProperty("User-Agent", "EvacuApp-UBO-StudentProject/1.0")
                 setRequestProperty("Accept", "application/json")
             }
 
@@ -155,27 +236,17 @@ suspend fun fetchOSRMRoute(
                     val points = mutableListOf<GeoPoint>()
                     for (i in 0 until coordinates.length()) {
                         val coord = coordinates.getJSONArray(i)
-                        val lon = coord.getDouble(0)
-                        val lat = coord.getDouble(1)
-                        points.add(GeoPoint(lat, lon))
+                        points.add(GeoPoint(coord.getDouble(1), coord.getDouble(0)))
                     }
-                    Log.d("OSRM_ROUTE", "Ruta ($osrmProfile) obtenida con éxito: ${points.size} puntos.")
                     return@withContext points
                 }
-            } else {
-                Log.e("OSRM_ROUTE", "Error HTTP OSRM: Código ${connection.responseCode}")
             }
         } catch (e: Exception) {
-            Log.e("OSRM_ROUTE", "Error en conexión OSRM: ${e.localizedMessage}")
+            Log.e("OSRM_ROUTE", "Error: ${e.localizedMessage}")
         }
-
         listOf(start, destination)
     }
 }
-
-// -------------------------------------------------------------
-// SELECCIÓN DE EMERGENCIA
-// -------------------------------------------------------------
 
 @Composable
 fun EmergencyTypeSelectScreen(
@@ -212,12 +283,6 @@ fun EmergencyTypeSelectScreen(
                     color = TextPrimary
                 )
             }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Se adaptarán las zonas seguras y los pesos de la red vial.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary
-            )
             Spacer(modifier = Modifier.height(20.dp))
             emergencyTypes.forEach { (name, emoji, subtitle) ->
                 Card(
@@ -236,17 +301,8 @@ fun EmergencyTypeSelectScreen(
                         Text(text = emoji, style = MaterialTheme.typography.headlineMedium)
                         Spacer(modifier = Modifier.width(16.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = name,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = TextPrimary
-                            )
-                            Text(
-                                text = subtitle,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextSecondary
-                            )
+                            Text(text = name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
+                            Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                         }
                         Icon(imageVector = Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = EvacuBlue)
                     }
@@ -256,35 +312,27 @@ fun EmergencyTypeSelectScreen(
     }
 }
 
-// -------------------------------------------------------------
-// PANTALLA MODO EMERGENCIA (CALCULO EN RADIO DE 15-20 KM)
-// -------------------------------------------------------------
-
 @Composable
 fun EmergencyActiveScreen(
     emergencyType: String,
+    selectedDestinationName: String = "Zona Segura",
+    selectedDestinationPoint: GeoPoint = GeoPoint(-33.5925, -70.7045),
+    routeDistanceMeters: Double? = null,
+    routeDurationSeconds: Double? = null,
     onStartNavigation: (destinationName: String, destinationPoint: GeoPoint) -> Unit,
     onBack: () -> Unit
 ) {
     val userPoint = UserLocationState.currentLocation ?: GeoPoint(-33.5925, -70.7045)
-    val maxRadiusMeters = 20_000.0
+    val hasCustomDestination = selectedDestinationName.isNotBlank() && selectedDestinationName != "Zona Segura"
 
-    val safeZonesInRange = safeZoneCandidates.filter { zone ->
-        userPoint.distanceToAsDouble(zone.point) <= maxRadiusMeters
-    }
+    val nearestSafeZone = findRecommendedSafeZone(userPoint) ?: safeZoneCandidates.first()
 
-    val nearestSafeZone = safeZonesInRange.minByOrNull { zone ->
-        userPoint.distanceToAsDouble(zone.point)
-    } ?: safeZoneCandidates.first()
+    val finalDestinationName = if (hasCustomDestination) selectedDestinationName else nearestSafeZone.name
+    val finalDestinationPoint = if (hasCustomDestination) selectedDestinationPoint else nearestSafeZone.point
 
-    val distanceMeters = userPoint.distanceToAsDouble(nearestSafeZone.point)
-    val distanceText = if (distanceMeters >= 1000) {
-        String.format(Locale.getDefault(), "%.1f km", distanceMeters / 1000.0)
-    } else {
-        "${distanceMeters.toInt()} m"
-    }
-
-    val estimatedTimeMinutes = (distanceMeters / 80.0).toInt().coerceAtLeast(1)
+    val realDistanceMeters = routeDistanceMeters ?: (userPoint.distanceToAsDouble(finalDestinationPoint) * 1.35)
+    val distanceText = if (realDistanceMeters >= 1000) String.format(Locale.getDefault(), "%.1f km", realDistanceMeters / 1000.0) else "${realDistanceMeters.toInt()} m"
+    val estimatedTimeMinutes = routeDurationSeconds?.let { (it / 60.0).toInt().coerceAtLeast(1) } ?: (realDistanceMeters / 666.0).toInt().coerceAtLeast(1)
 
     Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
         Column(
@@ -295,88 +343,54 @@ fun EmergencyActiveScreen(
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) {
                     Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver")
                 }
-                Text(
-                    text = "MODO EMERGENCIA",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = DangerRed
-                )
+                Text(text = "MODO EMERGENCIA", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = DangerRed)
             }
-            Surface(
-                color = DangerRedLight,
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth()
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
             ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Card(
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+                    modifier = Modifier.fillMaxSize()
                 ) {
-                    Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = DangerRed)
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Escenario: $emergencyType",
-                        color = DangerRed,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-            Card(
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(22.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Text(text = "Zona segura más cercana (Radio < 20 km)", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
-                    Text(text = nearestSafeZone.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = TextPrimary)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                    Column(
+                        modifier = Modifier.padding(22.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Column {
-                            Text(text = "Distancia", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                            Text(text = distanceText, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = EvacuBlue)
-                        }
-                        Column {
-                            Text(text = "Tiempo", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                            Text(text = "$estimatedTimeMinutes min", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = TextPrimary)
-                        }
-                        Column {
-                            Text(text = "Riesgo ML", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                            Text(text = nearestSafeZone.riskLevel, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = SafeGreen)
+                        Text(text = "Zona segura seleccionada", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+                        Text(text = finalDestinationName, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = TextPrimary)
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(text = "Distancia", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                                Text(text = distanceText, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = EvacuBlue)
+                            }
+                            Column {
+                                Text(text = "Tiempo", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                                Text(text = "$estimatedTimeMinutes min", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = TextPrimary)
+                            }
+                            Column {
+                                Text(text = "Riesgo", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                                Text(text = "Bajo", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = SafeGreen)
+                            }
                         }
                     }
                 }
             }
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = WarningAmberLight),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = WarningAmber)
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Grafo de calles calculado en tiempo real mediante OpenStreetMap.",
-                        color = TextPrimary,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.weight(1f))
+
             Button(
-                onClick = { onStartNavigation(nearestSafeZone.name, nearestSafeZone.point) },
+                onClick = { onStartNavigation(finalDestinationName, finalDestinationPoint) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(60.dp),
@@ -387,51 +401,97 @@ fun EmergencyActiveScreen(
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(text = "INICIAR EVACUACIÓN", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             }
-            OutlinedButton(
-                onClick = onBack,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = EvacuBlue)
-            ) {
-                Text(text = "BUSCAR OTRA RUTA", fontWeight = FontWeight.Bold)
-            }
         }
     }
 }
-
-// -------------------------------------------------------------
-// NAVEGACIÓN ACTIVA EN TIEMPO REAL CON GRAFOS DE CALLES OSM
-// -------------------------------------------------------------
 
 @SuppressLint("MissingPermission")
 @Composable
 fun ActiveNavigationScreen(
     destinationName: String = "Zona Segura",
     destinationPoint: GeoPoint = GeoPoint(-33.5925, -70.7045),
-    mobilityMode: String = "Vehículo", // 🟢 RECIBE EL MODO DE MOVILIDAD
+    mobilityMode: String = "Vehículo",
     fullPolyline: List<GeoPoint> = emptyList(),
+    isCustomRoute: Boolean = false,
     onFinish: () -> Unit
 ) {
     val context = LocalContext.current
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
-    var currentPoint by remember {
-        mutableStateOf(
-            UserLocationState.currentLocation ?: GeoPoint(-33.5925, -70.7045)
-        )
-    }
-    var currentBearing by remember { mutableDoubleStateOf(0.0) }
-    var remainingDistanceMeters by remember { mutableDoubleStateOf(0.0) }
+    val sensorManager = remember { context.getSystemService(android.content.Context.SENSOR_SERVICE) as android.hardware.SensorManager }
+    var deviceHeading by remember { mutableDoubleStateOf(0.0) }
 
+    var currentPoint by remember {
+        mutableStateOf(UserLocationState.currentLocation ?: GeoPoint(-33.5925, -70.7045))
+    }
+    var remainingDistanceMeters by remember { mutableDoubleStateOf(0.0) }
     var routePolylinePoints by remember { mutableStateOf(fullPolyline) }
 
-    // Re-calcula la ruta OSRM cuando cambie la posición o el modo de transporte
+    var turnInstruction by remember { mutableStateOf("Siga recto hacia el destino") }
+    var turnIconType by remember { mutableStateOf("straight") }
+
+    DisposableEffect(context) {
+        onDispose {
+            CustomVoicePlayer.stop()
+        }
+    }
+
+    DisposableEffect(sensorManager) {
+        val rotationSensor = sensorManager.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR)
+        val listener = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(event: android.hardware.SensorEvent) {
+                if (event.sensor.type == android.hardware.Sensor.TYPE_ROTATION_VECTOR) {
+                    val rotationMatrix = FloatArray(9)
+                    android.hardware.SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                    val orientationValues = FloatArray(3)
+                    android.hardware.SensorManager.getOrientation(rotationMatrix, orientationValues)
+                    var azimuth = Math.toDegrees(orientationValues[0].toDouble())
+                    if (azimuth < 0) azimuth += 360.0
+                    deviceHeading = azimuth
+                }
+            }
+            override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) {}
+        }
+        rotationSensor?.let {
+            sensorManager.registerListener(listener, it, android.hardware.SensorManager.SENSOR_DELAY_UI)
+        }
+        onDispose {
+            sensorManager.unregisterListener(listener)
+        }
+    }
+
     LaunchedEffect(currentPoint, destinationPoint, mobilityMode) {
         val fetchedPoints = fetchOSRMRoute(currentPoint, destinationPoint, mobilityMode)
         if (fetchedPoints.size > 2) {
             routePolylinePoints = fetchedPoints
+
+            if (fetchedPoints.size > 1) {
+                val p1 = fetchedPoints[0]
+                val p2 = fetchedPoints[1]
+                val bearingDiff = (p2.longitude - p1.longitude)
+                val newInstruction: String
+                val newType: String
+                if (bearingDiff > 0.0001) {
+                    newInstruction = "Gire levemente a la derecha"
+                    newType = "right"
+                } else if (bearingDiff < -0.0001) {
+                    newInstruction = "Gire levemente a la izquierda"
+                    newType = "left"
+                } else {
+                    newInstruction = "Continúe recto"
+                    newType = "straight"
+                }
+
+                if (turnInstruction != newInstruction) {
+                    turnInstruction = newInstruction
+                    turnIconType = newType
+
+                    if (!isCustomRoute) {
+                        val audioResId = CustomVoicePlayer.getAudioForStep(newType)
+                        CustomVoicePlayer.playAudio(context, audioResId)
+                    }
+                }
+            }
         }
     }
 
@@ -439,25 +499,17 @@ fun ActiveNavigationScreen(
         val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
             .setMinUpdateIntervalMillis(500L)
             .build()
-
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let { loc ->
                     val newPoint = GeoPoint(loc.latitude, loc.longitude)
                     currentPoint = newPoint
                     UserLocationState.currentLocation = newPoint
-                    currentBearing = loc.bearing.toDouble()
                     remainingDistanceMeters = newPoint.distanceToAsDouble(destinationPoint)
                 }
             }
         }
-
-        fusedLocationClient.requestLocationUpdates(
-            locationRequest,
-            callback,
-            Looper.getMainLooper()
-        )
-
+        fusedLocationClient.requestLocationUpdates(locationRequest, callback, Looper.getMainLooper())
         onDispose {
             fusedLocationClient.removeLocationUpdates(callback)
         }
@@ -469,16 +521,11 @@ fun ActiveNavigationScreen(
         "${remainingDistanceMeters.toInt()} m"
     }
 
-    // Adaptación de velocidad estimada según el perfil
     val speedMetersPerMinute = when {
-        mobilityMode.contains("Vehí", ignoreCase = true) || mobilityMode.contains(
-            "Auto",
-            ignoreCase = true
-        ) -> 500.0 // ~30 km/h en ciudad
-        mobilityMode.contains("Bici", ignoreCase = true) -> 250.0 // ~15 km/h
-        else -> 80.0 // ~4.8 km/h a pie
+        mobilityMode.contains("Vehí", ignoreCase = true) || mobilityMode.contains("Auto", ignoreCase = true) -> 500.0
+        mobilityMode.contains("Bici", ignoreCase = true) -> 250.0
+        else -> 80.0
     }
-
     val remainingMinutes = (remainingDistanceMeters / speedMetersPerMinute).toInt().coerceAtLeast(1)
 
     Surface(modifier = Modifier.fillMaxSize(), color = EvacuBlueDark) {
@@ -487,38 +534,51 @@ fun ActiveNavigationScreen(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = SurfaceWhite)
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
-                    modifier = Modifier.padding(16.dp),
+                    modifier = Modifier.padding(14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Surface(color = EvacuBlue, shape = CircleShape) {
+                    Surface(
+                        color = when (turnIconType) {
+                            "left" -> WarningAmber
+                            "right" -> EvacuBlue
+                            else -> SafeGreen
+                        },
+                        shape = CircleShape
+                    ) {
                         Icon(
-                            imageVector = Icons.Default.Navigation,
+                            imageVector = when (turnIconType) {
+                                "left" -> Icons.Default.ArrowBack
+                                "right" -> Icons.Default.ArrowForward
+                                else -> Icons.Default.Navigation
+                            },
                             contentDescription = null,
                             tint = Color.White,
                             modifier = Modifier
-                                .padding(12.dp)
-                                .size(28.dp)
+                                .padding(10.dp)
+                                .size(24.dp)
                         )
                     }
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column {
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Modo: $mobilityMode",
+                            text = turnInstruction,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary
                         )
                         Text(
-                            text = "Grafo de calles ($mobilityMode) en OSM",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = "Hacia: $destinationName",
+                            style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
                     }
@@ -531,13 +591,13 @@ fun ActiveNavigationScreen(
                     .fillMaxWidth()
             ) {
                 Card(
-                    shape = RoundedCornerShape(24.dp),
+                    shape = RoundedCornerShape(20.dp),
                     modifier = Modifier.fillMaxSize(),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                 ) {
                     ActiveNavigationMapOSM(
                         currentPoint = currentPoint,
-                        bearing = currentBearing,
+                        bearing = deviceHeading,
                         destinationPoint = destinationPoint,
                         destinationName = destinationName,
                         fullPolyline = routePolylinePoints
@@ -546,48 +606,43 @@ fun ActiveNavigationScreen(
             }
 
             Card(
-                shape = RoundedCornerShape(20.dp),
+                shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = SurfaceWhite)
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "Destino: $destinationName",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
-                    )
-                    Text(
-                        text = "$remainingDistanceText restantes · $remainingMinutes min aprox. · Riesgo: Bajo",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SafeGreen,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Column {
+                        Text(text = "Distancia / Tiempo", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        Text(
+                            text = "$remainingDistanceText • $remainingMinutes min aprox.",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = EvacuBlue
+                        )
+                        Text(
+                            text = "Riesgo: Bajo",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SafeGreen,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Button(
+                        onClick = onFinish,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = DangerRed)
+                    ) {
+                        Text(text = "FINALIZAR", fontWeight = FontWeight.Bold, color = Color.White)
+                    }
                 }
-            }
-
-            Button(
-                onClick = onFinish,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(54.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.White,
-                    contentColor = EvacuBlueDark
-                )
-            ) {
-                Text(text = "FINALIZAR EVACUACIÓN", fontWeight = FontWeight.Bold)
             }
         }
     }
 }
-
-// -------------------------------------------------------------
-// MAPA Y RENDERIZADO DE LA POLYLINE
-// -------------------------------------------------------------
 
 private class MapStateHolder(
     val mapView: MapView,
@@ -606,11 +661,8 @@ fun ActiveNavigationMapOSM(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-
     val holder = remember {
-        Configuration.getInstance().userAgentValue =
-            "EvacuApp-UBO-StudentProject/1.0 (${context.packageName})"
-
+        Configuration.getInstance().userAgentValue = "EvacuApp-UBO-StudentProject/1.0"
         val map = MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
@@ -652,13 +704,14 @@ fun ActiveNavigationMapOSM(
         val remainingPath = if (fullPolyline.isNotEmpty()) {
             val closestIndex = findClosestPointIndex(fullPolyline, currentPoint)
             val sliced = fullPolyline.drop(closestIndex).toMutableList()
-            sliced.add(0, currentPoint)
+            if (sliced.isEmpty()) sliced.add(currentPoint) else sliced.add(0, currentPoint)
             sliced
         } else {
             listOf(currentPoint, destinationPoint)
         }
 
         holder.routePolyline.setPoints(remainingPath)
+        holder.mapView.setMapOrientation(-bearing.toFloat())
         holder.mapView.controller.animateTo(currentPoint)
         holder.mapView.invalidate()
     }
