@@ -1,5 +1,6 @@
 package com.example.proyecto_evacuapp
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -37,9 +38,11 @@ import com.example.proyecto_evacuapp.ui.screens.AlertsScreen
 import com.example.proyecto_evacuapp.ui.screens.EmergencyActiveScreen
 import com.example.proyecto_evacuapp.ui.screens.EmergencyTypeSelectScreen
 import com.example.proyecto_evacuapp.ui.screens.InitialSetupScreen
+import com.example.proyecto_evacuapp.ui.screens.LoginScreen
 import com.example.proyecto_evacuapp.ui.screens.MapScreen
 import com.example.proyecto_evacuapp.ui.screens.OnboardingScreen
 import com.example.proyecto_evacuapp.ui.screens.ProfileScreen
+import com.example.proyecto_evacuapp.ui.screens.RegisterScreen
 import com.example.proyecto_evacuapp.ui.screens.ReportsScreen
 import com.example.proyecto_evacuapp.ui.screens.SplashScreen
 import com.example.proyecto_evacuapp.ui.screens.StandardNavigationScreen
@@ -76,6 +79,8 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class ScreenFlow {
+    LOGIN,
+    REGISTER,
     SPLASH,
     ONBOARDING,
     INITIAL_SETUP,
@@ -88,7 +93,17 @@ private enum class ScreenFlow {
 
 @Composable
 fun EvacuAppApp() {
-    var currentFlow by remember { mutableStateOf(ScreenFlow.SPLASH) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // Verificamos si el token ya existe en SharedPreferences
+    val sharedPreferences = remember { context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE) }
+    val hasToken = remember { !sharedPreferences.getString("jwt_token", null).isNullOrEmpty() }
+
+    // Si ya hay token, arrancamos en SPLASH; si no, vamos directo al LOGIN
+    var currentFlow by remember {
+        mutableStateOf(if (hasToken) ScreenFlow.SPLASH else ScreenFlow.LOGIN)
+    }
+
     var selectedEmergency by remember { mutableStateOf("Terremoto") }
 
     var selectedDestinationName by remember { mutableStateOf("Zona Segura") }
@@ -101,6 +116,14 @@ fun EvacuAppApp() {
     var currentRouteDurationSeconds by remember { mutableStateOf<Double?>(null) }
 
     when (currentFlow) {
+        ScreenFlow.LOGIN -> LoginScreen(
+            onLoginSuccess = { currentFlow = ScreenFlow.SPLASH },
+            onNavigateToRegister = { currentFlow = ScreenFlow.REGISTER }
+        )
+        ScreenFlow.REGISTER -> RegisterScreen(
+            onRegisterSuccess = { currentFlow = ScreenFlow.SPLASH },
+            onNavigateToLogin = { currentFlow = ScreenFlow.LOGIN }
+        )
         ScreenFlow.SPLASH -> SplashScreen(onContinue = { currentFlow = ScreenFlow.ONBOARDING })
         ScreenFlow.ONBOARDING -> OnboardingScreen(onFinish = { currentFlow = ScreenFlow.INITIAL_SETUP })
         ScreenFlow.INITIAL_SETUP -> InitialSetupScreen(
@@ -225,9 +248,8 @@ fun MainTabsContainer(
                 3 -> ProfileScreen()
             }
         }
-        }
     }
-
+}
 
 @Preview(showBackground = true, showSystemUi = true)
 @Composable
