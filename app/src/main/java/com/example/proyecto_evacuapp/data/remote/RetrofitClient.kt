@@ -7,7 +7,7 @@ import retrofit2.converter.gson.GsonConverterFactory
 
 object RetrofitClient {
     // Si usas el emulador de Android Studio:
-    private const val BASE_URL = "http://10.0.2.2:3000/"
+    private const val BASE_URL = "http://192.168.180.148:3000/"
 
     // (Si usas un celular físico por USB, cambia BASE_URL por la IP local de tu PC, ej: "http://192.168.1.X:3000/")
 
