@@ -1,5 +1,6 @@
 package com.example.proyecto_evacuapp.ui.components
 
+import android.content.Context
 import androidx.compose.runtime.mutableStateListOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +39,8 @@ object IncidentSharedState {
             }
         }
     }
+
+
 
     fun addLocalIncident(incident: SharedIncident) {
         val localIncident = incident.copy(
@@ -133,6 +136,9 @@ object IncidentSharedState {
                 incident.toEntity()
             )
         }
+    }
+    fun triggerSync(context: Context) {
+        IncidentSyncService.scheduleSync(context)
     }
 }
 
