@@ -1,35 +1,39 @@
 package com.example.proyecto_evacuapp.data.remote
 
+import com.google.gson.annotations.SerializedName
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.POST
 
-data class LoginRequest(val email: String, val password: String)
+data class LoginRequest(
+    @SerializedName("email") val email: String,
+    @SerializedName("password") val password: String
+)
 
 data class RegisterRequest(
-    val name: String,
-    val email: String,
-    val password: String,
-    val phone: String? = null
+    @SerializedName("name") val name: String,
+    @SerializedName("email") val email: String,
+    @SerializedName("password") val password: String,
+    @SerializedName("phone") val phone: String? = null
 )
 
 data class UserResponseDto(
-    val id: String,
-    val name: String,
-    val email: String,
-    val role: String
+    @SerializedName("id") val id: String,
+    @SerializedName("name") val name: String,
+    @SerializedName("email") val email: String,
+    @SerializedName("role") val role: String
 )
 
 data class AuthResponse(
-    val accessToken: String,
-    val tokenType: String,
-    val user: UserResponseDto
+    @SerializedName("accessToken") val accessToken: String,
+    @SerializedName("tokenType") val tokenType: String,
+    @SerializedName("user") val user: UserResponseDto
 )
 
 interface AuthApiService {
-    @POST("api/v1/auth/login")
+    @POST("auth/login")
     suspend fun login(@Body request: LoginRequest): Response<AuthResponse>
 
-    @POST("api/v1/auth/register")
+    @POST("auth/register")
     suspend fun register(@Body request: RegisterRequest): Response<AuthResponse>
 }

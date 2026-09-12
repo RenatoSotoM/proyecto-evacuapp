@@ -1,22 +1,28 @@
-package com.example.proyecto_evacuapp.ui.state
-
-import com.example.proyecto_evacuapp.domain.model.TransportMode
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+package com.example.proyecto_evacuapp.data
 
 object UserSessionState {
-    private val _selectedTransportMode = MutableStateFlow(TransportMode.VEHICULO)
-    val selectedTransportMode: StateFlow<TransportMode> = _selectedTransportMode.asStateFlow()
+    var currentUser: UserProfile = UserProfile()
+        private set
 
-    private val _hasReducedMobility = MutableStateFlow(false)
-    val hasReducedMobility: StateFlow<Boolean> = _hasReducedMobility.asStateFlow()
-
-    fun updateTransportMode(mode: TransportMode) {
-        _selectedTransportMode.value = mode
+    fun updateFromUserMeResponse(response: com.example.proyecto_evacuapp.data.remote.UserMeResponse) {
+        val mp = response.mobilityProfile
+        currentUser = UserProfile(
+            id = response.id,
+            name = response.name,
+            email = response.email,
+            role = response.role,
+            isLoggedIn = true,
+            mobilityType = mp?.mobilityType ?: "VEHICULO",
+            requiresAccessibleRoute = mp?.requiresAccessibleRoute ?: false,
+            travelsWithMinors = mp?.travelsWithMinors ?: false,
+            companionCount = mp?.companionCount ?: 0,
+            transportMode = TransportMode.entries.find { it.backendValue == (mp?.mobilityType ?: "VEHICULO") } ?: TransportMode.VEHICLE,
+            companions = mp?.companionDescription ?: "Solo",
+            locationZone = "San Bernardo, Santiago" // TODO: guardar en prefs si el usuario lo cambia
+        )
     }
 
-    fun updateReducedMobility(hasReduced: Boolean) {
-        _hasReducedMobility.value = hasReduced
+    fun clear() {
+        currentUser = UserProfile()
     }
 }

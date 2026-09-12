@@ -1,5 +1,6 @@
 package com.example.proyecto_evacuapp.ui.screens
 
+import android.content.Context
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -44,7 +45,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -62,6 +65,7 @@ fun ProfileScreen() {
     var showEditDialog by remember { mutableStateOf(false) }
     var showLoginDialog by remember { mutableStateOf(false) }
 
+    val context = LocalContext.current
     val user = UserSessionState.currentUser
 
     val mobilityIcon = when (user.transportMode) {
@@ -93,7 +97,21 @@ fun ProfileScreen() {
 
             TextButton(onClick = {
                 if (user.isLoggedIn) {
-                    UserSessionState.currentUser = user.copy(isLoggedIn = false)
+                    // Limpiar SharedPreferences
+                    val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+                    prefs.edit().clear().apply()
+
+                    // Resetear estado en memoria a invitado
+                    UserSessionState.currentUser = UserSessionState.currentUser.copy(
+                        id = "",
+                        name = "Usuario Invitado",
+                        email = "",
+                        role = "",
+                        isLoggedIn = false,
+                        transportMode = TransportMode.VEHICLE,
+                        companions = "Solo",
+                        locationZone = "San Bernardo, Santiago"
+                    )
                 } else {
                     showLoginDialog = true
                 }
@@ -154,7 +172,7 @@ fun ProfileScreen() {
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = EvacuBlue,
-                contentColor = androidx.compose.ui.graphics.Color.White
+                contentColor = Color.White
             )
         ) {
             Text(text = "EDITAR PREFERENCIAS", fontWeight = FontWeight.Bold)
