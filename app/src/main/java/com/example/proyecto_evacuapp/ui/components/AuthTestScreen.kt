@@ -5,7 +5,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.proyecto_evacuapp.data.local.TokenManager
 import com.example.proyecto_evacuapp.data.remote.LoginRequest
 import com.example.proyecto_evacuapp.data.remote.RegisterRequest
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
@@ -13,10 +15,14 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun AuthTestScreen() {
+    val context = LocalContext.current
+    val tokenManager = remember { TokenManager(context) }
+
     var emailText by remember { mutableStateOf("test@evacuapp.com") }
     var passwordText by remember { mutableStateOf("123456") }
     var statusText by remember { mutableStateOf("Ingresa credenciales y presiona un botón") }
     var isLoading by remember { mutableStateOf(false) }
+    var hasToken by remember { mutableStateOf(!tokenManager.getToken().isNullOrEmpty()) }
     val scope = rememberCoroutineScope()
 
     Column(
@@ -70,7 +76,10 @@ fun AuthTestScreen() {
                             val response = RetrofitClient.authApiService.register(request)
                             if (response.isSuccessful) {
                                 val body = response.body()
-                                RetrofitClient.authToken = body?.accessToken
+                                body?.accessToken?.let { token ->
+                                    tokenManager.saveToken(token)
+                                    hasToken = true
+                                }
                                 statusText = "¡Registro exitoso!\nUsuario ID: ${body?.user?.id}\nRole: ${body?.user?.role}"
                             } else {
                                 statusText = "Error en registro (${response.code()}):\n${response.errorBody()?.string()}"
@@ -98,7 +107,10 @@ fun AuthTestScreen() {
                             val response = RetrofitClient.authApiService.login(request)
                             if (response.isSuccessful) {
                                 val body = response.body()
-                                RetrofitClient.authToken = body?.accessToken
+                                body?.accessToken?.let { token ->
+                                    tokenManager.saveToken(token)
+                                    hasToken = true
+                                }
                                 statusText = "¡Login exitoso!\nToken recibido correctamente.\nUsuario: ${body?.user?.name}"
                             } else {
                                 statusText = "Error en login (${response.code()}):\n${response.errorBody()?.string()}"
@@ -138,7 +150,7 @@ fun AuthTestScreen() {
                     }
                 }
             },
-            enabled = !isLoading && RetrofitClient.authToken != null,
+            enabled = !isLoading && hasToken,
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Probar GET /users/me (Protegido)")

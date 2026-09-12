@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.proyecto_evacuapp.data.local.TokenManager
 import com.example.proyecto_evacuapp.data.remote.LoginRequest
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import kotlinx.coroutines.launch
@@ -20,6 +21,7 @@ fun LoginScreen(
     onNavigateToRegister: () -> Unit
 ) {
     val context = LocalContext.current
+    val tokenManager = remember { TokenManager(context) }
     val scope = rememberCoroutineScope()
 
     var email by remember { mutableStateOf("") }
@@ -79,10 +81,16 @@ fun LoginScreen(
                             val authResponse = response.body()!!
                             val token = authResponse.accessToken
 
-                            // Guardar token en memoria e independientemente en SharedPreferences
-                            RetrofitClient.authToken = token
+                            // Guardar token usando TokenManager y SharedPreferences
+                            tokenManager.saveToken(token)
                             val sharedPref = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
-                            sharedPref.edit().putString("jwt_token", token).apply()
+                            sharedPref.edit()
+                                .putString("jwt_token", token)
+                                .putString("user_id", authResponse.user.id)
+                                .putString("user_name", authResponse.user.name)
+                                .putString("user_email", authResponse.user.email)
+                                .putString("user_role", authResponse.user.role)
+                                .apply()
 
                             Toast.makeText(context, "¡Bienvenido ${authResponse.user.name}!", Toast.LENGTH_SHORT).show()
                             onLoginSuccess()

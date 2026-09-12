@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.proyecto_evacuapp.data.local.TokenManager
 import com.example.proyecto_evacuapp.data.remote.RegisterRequest
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import kotlinx.coroutines.launch
@@ -20,12 +21,12 @@ fun RegisterScreen(
     onNavigateToLogin: () -> Unit
 ) {
     val context = LocalContext.current
+    val tokenManager = remember { TokenManager(context) }
     val scope = rememberCoroutineScope()
 
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
 
     Column(
@@ -71,53 +72,35 @@ fun RegisterScreen(
             modifier = Modifier.fillMaxWidth()
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
-
-        OutlinedTextField(
-            value = phone,
-            onValueChange = { phone = it },
-            label = { Text("Teléfono (Opcional)") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-
         Spacer(modifier = Modifier.height(24.dp))
 
         Button(
             onClick = {
                 if (name.isBlank() || email.isBlank() || password.isBlank()) {
-                    Toast.makeText(context, "Por favor completa los campos requeridos", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Por favor completa todos los campos", Toast.LENGTH_SHORT).show()
                     return@Button
                 }
 
                 isLoading = true
                 scope.launch {
                     try {
-                        val request = RegisterRequest(
-                            name = name.trim(),
-                            email = email.trim(),
-                            password = password,
-                            phone = phone.ifBlank { null }
+                        val response = RetrofitClient.authApiService.register(
+                            RegisterRequest(name = name.trim(), email = email.trim(), password = password)
                         )
-
-                        val response = RetrofitClient.authApiService.register(request)
 
                         if (response.isSuccessful && response.body() != null) {
                             val authResponse = response.body()!!
                             val token = authResponse.accessToken
 
-                            // Guardar token
-                            RetrofitClient.authToken = token
-                            val sharedPref = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
-                            sharedPref.edit().putString("jwt_token", token).apply()
+                            token?.let { tokenManager.saveToken(it) }
 
-                            Toast.makeText(context, "¡Cuenta creada exitosamente!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "¡Registro exitoso!", Toast.LENGTH_SHORT).show()
                             onRegisterSuccess()
                         } else {
-                            Toast.makeText(context, "Error en registro (${response.code()})", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "Error en el registro (${response.code()})", Toast.LENGTH_LONG).show()
                         }
                     } catch (e: Exception) {
-                        Toast.makeText(context, "Error de conexión: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Error de red: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                     } finally {
                         isLoading = false
                     }
@@ -135,7 +118,7 @@ fun RegisterScreen(
             onClick = onNavigateToLogin,
             enabled = !isLoading
         ) {
-            Text("¿Ya tienes cuenta? Inicia sesión")
+            Text("¿Ya tienes cuenta? Inicia sesión aquí")
         }
     }
 }

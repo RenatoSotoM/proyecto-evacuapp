@@ -20,7 +20,6 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -32,7 +31,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
 import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
 import com.example.proyecto_evacuapp.ui.screens.ActiveNavigationScreen
@@ -104,14 +102,6 @@ fun EvacuAppApp() {
     val savedToken = remember { sharedPreferences.getString("jwt_token", null) }
     val hasToken = !savedToken.isNullOrEmpty()
 
-    // Sincroniza el token guardado con el interceptor de Retrofit
-    LaunchedEffect(savedToken) {
-        if (!savedToken.isNullOrEmpty()) {
-            RetrofitClient.authToken = savedToken
-        }
-    }
-
-    // Si ya hay token, arrancamos en SPLASH; si no, vamos directo al LOGIN
     var currentFlow by remember {
         mutableStateOf(if (hasToken) ScreenFlow.SPLASH else ScreenFlow.LOGIN)
     }
@@ -157,7 +147,8 @@ fun EvacuAppApp() {
                 selectedDestinationPoint = point
                 currentFlow = ScreenFlow.STANDARD_NAVIGATION
             },
-            onChangeMobility = { userMobilityProfile = it }
+            onChangeMobility = { userMobilityProfile = it },
+            onLogout = { currentFlow = ScreenFlow.LOGIN } // <--- Cambiar el flujo a LOGIN aquí
         )
         ScreenFlow.EMERGENCY_SELECT -> EmergencyTypeSelectScreen(
             onEmergencySelected = { type ->
@@ -203,7 +194,8 @@ fun MainTabsContainer(
     userMobility: String,
     onOpenEmergency: (Double, Double) -> Unit,
     onStartStandardNav: (String, GeoPoint) -> Unit,
-    onChangeMobility: (String) -> Unit
+    onChangeMobility: (String) -> Unit,
+    onLogout: () -> Unit // <--- Añadir este parámetro
 ) {
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     val tabs = listOf(
@@ -257,7 +249,7 @@ fun MainTabsContainer(
                 0 -> MapScreen()
                 1 -> ReportsScreen()
                 2 -> AlertsScreen()
-                3 -> ProfileScreen()
+                3 -> ProfileScreen(onLogout = onLogout) // <--- Pasar el callback aquí
             }
         }
     }

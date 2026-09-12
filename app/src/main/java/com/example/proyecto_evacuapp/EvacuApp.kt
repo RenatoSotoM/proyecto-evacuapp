@@ -15,6 +15,8 @@ class EvacuApp : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        RetrofitClient.init(this)
+
         // Inicialización de base de datos local y estado compartido
         val database = EvacuAppDatabase.getInstance(this)
         IncidentSharedState.initialize(database)
@@ -35,6 +37,8 @@ class EvacuApp : Application() {
                     role = userRole,
                     isLoggedIn = true
                 )
+
+                val appContext = this@EvacuApp
 
                 CoroutineScope(Dispatchers.IO).launch {
                     try {

@@ -1,379 +1,107 @@
 package com.example.proyecto_evacuapp.ui.screens
 
 import android.content.Context
-import android.util.Log
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.DirectionsBike
-import androidx.compose.material.icons.filled.DirectionsCar
-import androidx.compose.material.icons.filled.DirectionsWalk
-import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.WheelchairPickup
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import android.widget.Toast
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import com.example.proyecto_evacuapp.data.TransportMode
-import com.example.proyecto_evacuapp.data.UserProfile
 import com.example.proyecto_evacuapp.data.UserSessionState
+import com.example.proyecto_evacuapp.data.local.TokenManager
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
-import com.example.proyecto_evacuapp.data.remote.UpdateMobilityProfileRequest
-import com.example.proyecto_evacuapp.ui.theme.EvacuBlue
-import com.example.proyecto_evacuapp.ui.theme.EvacuBlueLight
-import com.example.proyecto_evacuapp.ui.theme.SurfaceWhite
-import com.example.proyecto_evacuapp.ui.theme.TextPrimary
-import com.example.proyecto_evacuapp.ui.theme.TextSecondary
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 
 @Composable
-fun ProfileScreen() {
-    var showEditDialog by remember { mutableStateOf(false) }
-    var showLoginDialog by remember { mutableStateOf(false) }
+fun ProfileScreen(
+    onLogout: () -> Unit = {}
+) {
     val context = LocalContext.current
-    val user = UserSessionState.currentUser
+    val tokenManager = remember { TokenManager(context) }
+    val scope = rememberCoroutineScope()
+    var isLoading by remember { mutableStateOf(false) }
 
-    val mobilityIcon = when (user.mobilityType) {
-        "VEHICULO" -> Icons.Default.DirectionsCar
-        "PEATON" -> Icons.Default.DirectionsWalk
-        "BICICLETA" -> Icons.Default.DirectionsBike
-        "PERSONA_MOVILIDAD_REDUCIDA" -> Icons.Default.WheelchairPickup
-        else -> Icons.Default.DirectionsCar
+    var userName by remember { mutableStateOf<String>(UserSessionState.currentUser.name) }
+    var userEmail by remember { mutableStateOf<String>(UserSessionState.currentUser.email) }
+    var userRole by remember { mutableStateOf<String>(UserSessionState.currentUser.role) }
+    var userMobility by remember { mutableStateOf<String>("Vehículo") }
+
+    LaunchedEffect(Unit) {
+        scope.launch {
+            try {
+                isLoading = true
+                val response = RetrofitClient.userApiService.getMe()
+                if (response.isSuccessful && response.body() != null) {
+                    val userBody = response.body()!!
+                    UserSessionState.updateFromUserMeResponse(userBody)
+
+                    userName = UserSessionState.currentUser.name
+                    userEmail = UserSessionState.currentUser.email
+                    userRole = UserSessionState.currentUser.role
+                }
+            } catch (e: Exception) {
+                Toast.makeText(context, "Error al cargar perfil: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            } finally {
+                isLoading = false
+            }
+        }
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Perfil de evacuación",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = TextPrimary
-            )
+        Text(
+            text = "Perfil de Usuario",
+            style = MaterialTheme.typography.headlineMedium
+        )
 
-            TextButton(onClick = {
-                if (user.isLoggedIn) {
-                    val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
-                    prefs.edit().clear().apply()
-                    UserSessionState.clear()
-                } else {
-                    showLoginDialog = true
-                }
-            }) {
-                Text(if (user.isLoggedIn) "Cerrar sesión" else "Iniciar sesión", fontWeight = FontWeight.Bold)
-            }
-        }
+        Spacer(modifier = Modifier.height(24.dp))
 
         Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = SurfaceWhite)
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                modifier = Modifier.padding(18.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Surface(color = EvacuBlueLight, shape = CircleShape) {
-                    Icon(
-                        imageVector = Icons.Default.AccountCircle,
-                        contentDescription = null,
-                        tint = EvacuBlue,
-                        modifier = Modifier.padding(8.dp).size(50.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text(
-                        text = if (user.isLoggedIn) user.name else "Usuario Invitado",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
-                    )
-                    Text(
-                        text = user.email,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary
-                    )
-                }
-            }
-        }
-
-        Text(
-            text = "Parámetros de movilidad",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = TextPrimary
-        )
-
-        ProfileItemRow("Tipo de movilidad", user.mobilityType, mobilityIcon)
-        ProfileItemRow("Ruta accesible", if (user.requiresAccessibleRoute) "Sí" else "No", Icons.Default.WheelchairPickup)
-        ProfileItemRow("Viaja con menores", if (user.travelsWithMinors) "Sí" else "No", Icons.Default.Person)
-        ProfileItemRow("Nº acompañantes", user.companionCount.toString(), Icons.Default.Person)
-
-        ProfileItemRow("Modo legacy", user.transportMode.label, mobilityIcon)
-        ProfileItemRow("Acompañantes (texto)", user.companions, Icons.Default.Person)
-        ProfileItemRow("Zona base offline", user.locationZone, Icons.Default.LocationOn)
-
-        Button(
-            onClick = { showEditDialog = true },
-            modifier = Modifier.fillMaxWidth().height(54.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = EvacuBlue,
-                contentColor = Color.White
-            )
-        ) {
-            Text(text = "EDITAR PREFERENCIAS", fontWeight = FontWeight.Bold)
-        }
-    }
-
-    if (showEditDialog) {
-        EditPreferencesDialog(
-            currentProfile = user,
-            onDismiss = { showEditDialog = false },
-            onSave = { updated ->
-                UserSessionState.currentUser = updated
-                syncMobilityProfileToBackend(updated)
-                showEditDialog = false
-            }
-        )
-    }
-
-    if (showLoginDialog) {
-        LoginRegisterDialog(
-            onDismiss = { showLoginDialog = false },
-            onLoginSuccess = { name, email ->
-                UserSessionState.currentUser = user.copy(name = name, email = email, isLoggedIn = true)
-                showLoginDialog = false
-            }
-        )
-    }
-}
-
-@Composable
-fun EditPreferencesDialog(
-    currentProfile: UserProfile,
-    onDismiss: () -> Unit,
-    onSave: (UserProfile) -> Unit
-) {
-    var selectedMobilityType by remember { mutableStateOf(currentProfile.mobilityType) }
-    var requiresAccessibleRoute by remember { mutableStateOf(currentProfile.requiresAccessibleRoute) }
-    var travelsWithMinors by remember { mutableStateOf(currentProfile.travelsWithMinors) }
-    var companionCount by remember { mutableStateOf(currentProfile.companionCount) }
-    var companionsText by remember { mutableStateOf(currentProfile.companions) }
-    var zoneText by remember { mutableStateOf(currentProfile.locationZone) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Editar Preferencias", fontWeight = FontWeight.Bold) },
-        text = {
             Column(
-                verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.padding(16.dp)
             ) {
-                Text("Tipo de movilidad:", fontWeight = FontWeight.SemiBold)
-                listOf("PEATON", "VEHICULO", "BICICLETA", "PERSONA_MOVILIDAD_REDUCIDA").forEach { mt ->
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        RadioButton(
-                            selected = selectedMobilityType == mt,
-                            onClick = { selectedMobilityType = mt }
-                        )
-                        Text(mt)
-                    }
-                }
+                Text(text = "Nombre: $userName", style = MaterialTheme.typography.bodyLarge)
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    Checkbox(checked = requiresAccessibleRoute, onCheckedChange = { requiresAccessibleRoute = it })
-                    Text("Requiere ruta accesible")
-                }
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    Checkbox(checked = travelsWithMinors, onCheckedChange = { travelsWithMinors = it })
-                    Text("Viaja con menores")
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Nº acompañantes: $companionCount")
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Slider(
-                        value = companionCount.toFloat(),
-                        onValueChange = { companionCount = it.roundToInt() },
-                        valueRange = 0f..20f,
-                        steps = 20
-                    )
-                }
-                OutlinedTextField(
-                    value = companionsText,
-                    onValueChange = { companionsText = it },
-                    label = { Text("Acompañantes (texto legacy)") },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = zoneText,
-                    onValueChange = { zoneText = it },
-                    label = { Text("Zona base offline") },
-                    singleLine = true
-                )
-            }
-        },
-        confirmButton = {
-            Button(onClick = {
-                onSave(currentProfile.copy(
-                    mobilityType = selectedMobilityType,
-                    requiresAccessibleRoute = requiresAccessibleRoute,
-                    travelsWithMinors = travelsWithMinors,
-                    companionCount = companionCount,
-                    companions = companionsText,
-                    locationZone = zoneText,
-                    transportMode = TransportMode.entries.find { it.backendValue == selectedMobilityType } ?: TransportMode.VEHICLE
-                ))
-            }) { Text("Guardar") }
-        },
-        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("Cancelar") } }
-    )
-}
-
-@Composable
-fun LoginRegisterDialog(
-    onDismiss: () -> Unit,
-    onLoginSuccess: (String, String) -> Unit
-) {
-    var isRegister by remember { mutableStateOf(false) }
-    var nameText by remember { mutableStateOf("") }
-    var emailText by remember { mutableStateOf("") }
-    var passwordText by remember { mutableStateOf("") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (isRegister) "Crear Cuenta" else "Iniciar Sesión", fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (isRegister) {
-                    OutlinedTextField(
-                        value = nameText,
-                        onValueChange = { nameText = it },
-                        label = { Text("Nombre completo") }
-                    )
-                }
-                OutlinedTextField(
-                    value = emailText,
-                    onValueChange = { emailText = it },
-                    label = { Text("Correo electrónico") }
-                )
-                OutlinedTextField(
-                    value = passwordText,
-                    onValueChange = { passwordText = it },
-                    label = { Text("Contraseña") },
-                    visualTransformation = PasswordVisualTransformation()
-                )
-                TextButton(onClick = { isRegister = !isRegister }) {
-                    Text(if (isRegister) "¿Tienes cuenta? Inicia sesión" else "¿No tienes cuenta? Regístrate")
-                }
-            }
-        },
-        confirmButton = {
-            Button(onClick = {
-                val finalName = if (nameText.isBlank()) "Usuario EvacuApp" else nameText
-                onLoginSuccess(finalName, emailText)
-            }) {
-                Text(if (isRegister) "Registrar" else "Ingresar")
-            }
-        },
-        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("Cancelar") } }
-    )
-}
-
-@Composable
-fun ProfileItemRow(title: String, value: String, icon: ImageVector) {
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = SurfaceWhite)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(color = EvacuBlueLight, shape = CircleShape) {
-                Icon(imageVector = icon, contentDescription = null, tint = EvacuBlue, modifier = Modifier.padding(9.dp))
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column {
-                Text(text = title, style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                Text(text = value, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                Text(text = "Correo: $userEmail", style = MaterialTheme.typography.bodyMedium)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(text = "Rol: $userRole", style = MaterialTheme.typography.bodyMedium)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(text = "Movilidad: $userMobility", style = MaterialTheme.typography.bodyMedium)
             }
         }
-    }
-}
 
-private fun syncMobilityProfileToBackend(profile: UserProfile) {
-    CoroutineScope(Dispatchers.IO).launch {
-        try {
-            val dto = UpdateMobilityProfileRequest(
-                mobilityType = profile.mobilityType,
-                requiresAccessibleRoute = profile.requiresAccessibleRoute,
-                travelsWithMinors = profile.travelsWithMinors,
-                companionCount = profile.companionCount
-            )
-            val response = RetrofitClient.userApiService.updateMobilityProfile(dto)
-            if (!response.isSuccessful) {
-                Log.w("PROFILE", "Sync failed: ${response.code()} ${response.errorBody()?.string()}")
-            } else {
-                Log.d("PROFILE", "Mobility profile synced successfully")
-            }
-        } catch (e: Exception) {
-            Log.e("PROFILE", "Sync exception", e)
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Button(
+            onClick = {
+                // Limpiar token y preferencias de sesión
+                tokenManager.clearToken()
+                val sharedPref = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+                sharedPref.edit().clear().apply()
+
+                Toast.makeText(context, "Sesión cerrada correctamente", Toast.LENGTH_SHORT).show()
+                onLogout()
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Cerrar Sesión", color = Color.White)
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        if (isLoading) {
+            CircularProgressIndicator()
         }
     }
 }
