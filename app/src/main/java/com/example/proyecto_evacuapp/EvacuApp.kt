@@ -5,7 +5,6 @@ import android.content.Context
 import android.util.Log
 import com.example.proyecto_evacuapp.data.UserSessionState
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
-import com.example.proyecto_evacuapp.data.remote.UserMeResponse
 import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
 import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
 import kotlinx.coroutines.CoroutineScope
@@ -16,8 +15,7 @@ class EvacuApp : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        RetrofitClient.init(this)
-
+        // Inicialización de base de datos local y estado compartido
         val database = EvacuAppDatabase.getInstance(this)
         IncidentSharedState.initialize(database)
 

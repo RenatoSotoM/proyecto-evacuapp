@@ -20,6 +20,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -31,6 +32,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
 import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
 import com.example.proyecto_evacuapp.ui.screens.ActiveNavigationScreen
@@ -60,6 +62,8 @@ import java.io.File
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        getSharedPreferences("auth_prefs", Context.MODE_PRIVATE).edit().clear().apply()
 
         val database = EvacuAppDatabase.getInstance(applicationContext)
         IncidentSharedState.initialize(database)
@@ -97,7 +101,15 @@ fun EvacuAppApp() {
 
     // Verificamos si el token ya existe en SharedPreferences
     val sharedPreferences = remember { context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE) }
-    val hasToken = remember { !sharedPreferences.getString("jwt_token", null).isNullOrEmpty() }
+    val savedToken = remember { sharedPreferences.getString("jwt_token", null) }
+    val hasToken = !savedToken.isNullOrEmpty()
+
+    // Sincroniza el token guardado con el interceptor de Retrofit
+    LaunchedEffect(savedToken) {
+        if (!savedToken.isNullOrEmpty()) {
+            RetrofitClient.authToken = savedToken
+        }
+    }
 
     // Si ya hay token, arrancamos en SPLASH; si no, vamos directo al LOGIN
     var currentFlow by remember {

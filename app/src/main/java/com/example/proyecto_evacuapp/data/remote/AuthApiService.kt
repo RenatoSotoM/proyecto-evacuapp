@@ -21,13 +21,17 @@ data class UserResponseDto(
     @SerializedName("id") val id: String,
     @SerializedName("name") val name: String,
     @SerializedName("email") val email: String,
-    @SerializedName("role") val role: String
+    @SerializedName("role") val role: String? = "USER"
 )
 
 data class AuthResponse(
-    @SerializedName("accessToken") val accessToken: String,
-    @SerializedName("tokenType") val tokenType: String,
-    @SerializedName("user") val user: UserResponseDto
+    // Maneja si NestJS responde accessToken o access_token
+    @SerializedName("accessToken", alternate = ["access_token"])
+    val accessToken: String,
+    @SerializedName("tokenType", alternate = ["token_type"])
+    val tokenType: String? = "Bearer",
+    @SerializedName("user")
+    val user: UserResponseDto
 )
 
 interface AuthApiService {

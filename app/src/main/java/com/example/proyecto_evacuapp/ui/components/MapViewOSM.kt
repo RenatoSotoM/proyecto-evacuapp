@@ -13,7 +13,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.example.proyecto_evacuapp.data.IncidentRepository // Asegúrate de importar tu IncidentRepository
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -34,35 +33,33 @@ fun MapViewOSM(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    val (mapView, userMarker) = remember {
+    val mapView = remember {
         Configuration.getInstance().userAgentValue = "EvacuApp-UBO-StudentProject/1.0 (${context.packageName})"
-        val map = MapView(context).apply {
+        MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
             isTilesScaledToDpi = true
             controller.setZoom(zoomLevel)
             overlays.clear()
 
-            // 🟢 INTERCEPTA EL GESTO TÁCTIL PARA APAGAR EL SEGUIMIENTO AUTOMÁTICO
             setOnTouchListener { _, event ->
                 if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_MOVE) {
                     onMapTouched()
                 }
-                false // Retorna false para que osmdroid siga procesando los gestos de arrastrar y zoom
+                false
             }
         }
+    }
 
-        val marker = Marker(map).apply {
+    val userMarker = remember(mapView) {
+        Marker(mapView).apply {
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
             title = "Tu ubicación actual"
             setInfoWindow(null)
+            mapView.overlays.add(this)
         }
-        map.overlays.add(marker)
-
-        Pair(map, marker)
     }
 
-    // 🟢 Actualiza la posición del marcador siempre, pero solo mueve la cámara si isTrackingUser es true
     LaunchedEffect(latitude, longitude, isTrackingUser) {
         if (latitude != null && longitude != null) {
             val userLocation = GeoPoint(latitude, longitude)
@@ -76,34 +73,12 @@ fun MapViewOSM(
         }
     }
 
-    // 🟢 Fuerza el recentrado de la cámara cuando se presiona explícitamente el botón (recenterTrigger)
     LaunchedEffect(recenterTrigger) {
         if (recenterTrigger > 0 && latitude != null && longitude != null) {
             val userLocation = GeoPoint(latitude, longitude)
             mapView.controller.animateTo(userLocation, zoomLevel, 800L)
             mapView.invalidate()
         }
-    }
-
-    // 🟢 DIBUJA ICONOS DE INCIDENTES (Aparecen si tienen más de 1 confirmación)
-    val activeReports = IncidentRepository.activeReports
-    LaunchedEffect(activeReports.toList()) {
-        // Limpia unicamente los marcadores de incidentes para no borrar el marcador GPS del usuario
-        mapView.overlays.removeAll { it is Marker && it != userMarker }
-
-        // Filtra los incidentes con 2 o más confirmaciones
-        val verifiedReports = activeReports.filter { it.verificationCount >= 2 }
-
-        verifiedReports.forEach { report ->
-            val incidentMarker = Marker(mapView).apply {
-                position = report.location
-                title = report.title
-                snippet = "${report.description}\nConfirmaciones: ${report.verificationCount}"
-                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-            }
-            mapView.overlays.add(incidentMarker)
-        }
-        mapView.invalidate()
     }
 
     DisposableEffect(lifecycleOwner) {

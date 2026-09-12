@@ -5,7 +5,6 @@ import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
-import com.example.proyecto_evacuapp.ui.components.IncidentEntity
 import kotlinx.coroutines.flow.first
 
 class IncidentSyncWorker(
@@ -18,7 +17,7 @@ class IncidentSyncWorker(
             val database = EvacuAppDatabase.getInstance(applicationContext)
             val dao = database.incidentDao()
 
-            Log.d("SyncWorker", "Iniciando sincronización local con el backend...")
+            Log.d("SyncWorker", "Iniciando sincronización de incidentes local -> NestJS...")
 
             val localIncidents = dao.observeAll().first()
 
@@ -32,26 +31,26 @@ class IncidentSyncWorker(
                         longitude = incident.longitude
                     )
 
-                    val response = RetrofitClient.apiService.createIncident(dto)
+                    val response = RetrofitClient.incidentApiService.createIncident(dto)
 
                     if (response.isSuccessful) {
-                        val serverData = response.body()
+                        val serverData: IncidentResponseDto? = response.body()
                         if (serverData != null) {
                             val updated = incident.copy(remoteId = serverData.id)
                             dao.upsert(updated)
-                            Log.d("SyncWorker", "Incidente sincronizado con éxito. ID Remoto: ${serverData.id}")
+                            Log.d("SyncWorker", "Incidente sincronizado con éxito. ID Remoto NestJS: ${serverData.id}")
                         } else {
-                            Log.w("SyncWorker", "Respuesta exitosa pero body nulo")
+                            Log.w("SyncWorker", "Respuesta HTTP exitosa pero body nulo.")
                         }
                     } else {
-                        Log.e("SyncWorker", "Error del servidor: ${response.code()} - ${response.errorBody()?.string()}")
+                        Log.e("SyncWorker", "Error del servidor (${response.code()}): ${response.errorBody()?.string()}")
                     }
                 }
             }
 
             Result.success()
         } catch (e: Exception) {
-            Log.e("SyncWorker", "Fallo de red en sincronización: ${e.localizedMessage}", e)
+            Log.e("SyncWorker", "Fallo de red al sincronizar: ${e.localizedMessage}", e)
             Result.retry()
         }
     }

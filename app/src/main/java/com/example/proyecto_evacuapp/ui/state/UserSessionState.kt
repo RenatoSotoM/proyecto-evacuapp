@@ -1,10 +1,11 @@
 package com.example.proyecto_evacuapp.data
 
+import com.example.proyecto_evacuapp.data.remote.UserMeResponse
+
 object UserSessionState {
     var currentUser: UserProfile = UserProfile()
-        private set
 
-    fun updateFromUserMeResponse(response: com.example.proyecto_evacuapp.data.remote.UserMeResponse) {
+    fun updateFromUserMeResponse(response: UserMeResponse) {
         val mp = response.mobilityProfile
         currentUser = UserProfile(
             id = response.id,
@@ -18,7 +19,7 @@ object UserSessionState {
             companionCount = mp?.companionCount ?: 0,
             transportMode = TransportMode.entries.find { it.backendValue == (mp?.mobilityType ?: "VEHICULO") } ?: TransportMode.VEHICLE,
             companions = mp?.companionDescription ?: "Solo",
-            locationZone = "San Bernardo, Santiago" // TODO: guardar en prefs si el usuario lo cambia
+            locationZone = "San Bernardo, Santiago"
         )
     }
 

@@ -34,12 +34,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.example.proyecto_evacuapp.data.IncidentRepository
+import com.example.proyecto_evacuapp.data.local.IncidentEntity
 import com.example.proyecto_evacuapp.ui.components.UserLocationState
 import com.example.proyecto_evacuapp.ui.theme.DangerRed
 import com.example.proyecto_evacuapp.ui.theme.DangerRedLight
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlue
-import com.example.proyecto_evacuapp.ui.theme.EvacuBlueLight
 import com.example.proyecto_evacuapp.ui.theme.SafeGreen
 import com.example.proyecto_evacuapp.ui.theme.SafeGreenLight
 import com.example.proyecto_evacuapp.ui.theme.SurfaceWhite
@@ -49,15 +48,42 @@ import com.example.proyecto_evacuapp.ui.theme.WarningAmber
 import com.example.proyecto_evacuapp.ui.theme.WarningAmberLight
 import org.osmdroid.util.GeoPoint
 
-@Composable
-fun AlertsScreen() {
-    // Ubicación GPS actual del usuario o fallback a San Bernardo
-    val userLocation = UserLocationState.currentLocation ?: GeoPoint(-33.5925, -70.7045)
-    val maxRadiusMeters = 5000.0 // Radio de acción: 5 km
+// Extensiones privadas para garantizar acceso seguro a propiedades de IncidentEntity
+private val IncidentEntity.alertLat: Double
+    get() = runCatching { this.javaClass.getMethod("getLatitude").invoke(this) as Double }
+        .getOrElse { runCatching { this.javaClass.getMethod("getLat").invoke(this) as Double }.getOrDefault(0.0) }
 
-    // Filtrar reportes activos en un radio <= 5 km
-    val nearbyAlerts = IncidentRepository.activeReports.filter { report ->
-        userLocation.distanceToAsDouble(report.location) <= maxRadiusMeters
+private val IncidentEntity.alertLng: Double
+    get() = runCatching { this.javaClass.getMethod("getLongitude").invoke(this) as Double }
+        .getOrElse { runCatching { this.javaClass.getMethod("getLng").invoke(this) as Double }.getOrDefault(0.0) }
+
+private val IncidentEntity.alertSeverity: String
+    get() = runCatching { this.javaClass.getMethod("getSeverityLevel").invoke(this) as String }
+        .getOrElse { runCatching { this.javaClass.getMethod("getSeverity").invoke(this) as String }.getOrDefault("MEDIA") }
+
+private val IncidentEntity.alertTimestamp: Long
+    get() = runCatching { this.javaClass.getMethod("getTimestamp").invoke(this) as Long }
+        .getOrElse { runCatching { this.javaClass.getMethod("getTimestampMillis").invoke(this) as Long }.getOrDefault(System.currentTimeMillis()) }
+
+private val IncidentEntity.alertTitle: String
+    get() = runCatching { this.javaClass.getMethod("getTitle").invoke(this) as String }
+        .getOrElse { runCatching { this.javaClass.getMethod("getType").invoke(this) as String }.getOrDefault("Alerta") }
+
+private val IncidentEntity.alertDescription: String
+    get() = runCatching { this.javaClass.getMethod("getDescription").invoke(this) as String }
+        .getOrDefault("Sin descripción")
+
+@Composable
+fun AlertsScreen(
+    incidents: List<IncidentEntity> = emptyList(),
+    onVerifyIncident: (IncidentEntity) -> Unit = {}
+) {
+    val userLocation = UserLocationState.currentLocation ?: GeoPoint(-33.5925, -70.7045)
+    val maxRadiusMeters = 5000.0
+
+    val nearbyAlerts = incidents.filter { report ->
+        val reportGeoPoint = GeoPoint(report.alertLat, report.alertLng)
+        userLocation.distanceToAsDouble(reportGeoPoint) <= maxRadiusMeters
     }
 
     Column(
@@ -82,7 +108,6 @@ fun AlertsScreen() {
             )
         }
 
-        // Si no hay alertas en un radio de 5 km
         if (nearbyAlerts.isEmpty()) {
             Card(
                 shape = RoundedCornerShape(20.dp),
@@ -118,35 +143,33 @@ fun AlertsScreen() {
                 }
             }
         } else {
-            // Renderizado dinámico de alertas cercanas
             nearbyAlerts.forEach { report ->
-                val distanceMeters = userLocation.distanceToAsDouble(report.location)
+                val reportGeoPoint = GeoPoint(report.alertLat, report.alertLng)
+                val distanceMeters = userLocation.distanceToAsDouble(reportGeoPoint)
                 val formattedDistance = if (distanceMeters < 1000) {
                     "${distanceMeters.toInt()} m de tu ubicación"
                 } else {
                     String.format("%.1f km de tu ubicación", distanceMeters / 1000.0)
                 }
 
-                val minutesAgo = ((System.currentTimeMillis() - report.timestamp) / 60000).coerceAtLeast(1)
+                val minutesAgo = ((System.currentTimeMillis() - report.alertTimestamp) / 60000).coerceAtLeast(1)
                 val formattedTime = "Hace $minutesAgo min"
 
-                // Determinar ícono y paleta según severidad
-                val (icon, color, background) = when (report.severity) {
-                    "Alto" -> Triple(Icons.Default.Warning, DangerRed, DangerRedLight)
-                    "Medio" -> Triple(Icons.Default.Warning, WarningAmber, WarningAmberLight)
+                val (icon, color, background) = when (report.alertSeverity.uppercase()) {
+                    "ALTA", "ALTO" -> Triple(Icons.Default.Warning, DangerRed, DangerRedLight)
+                    "MEDIA", "MEDIO" -> Triple(Icons.Default.Warning, WarningAmber, WarningAmberLight)
                     else -> Triple(Icons.Default.CloudDone, SafeGreen, SafeGreenLight)
                 }
 
                 AlertCardItem(
-                    title = report.title,
-                    description = report.description,
+                    title = report.alertTitle,
+                    description = report.alertDescription,
                     distance = formattedDistance,
                     time = formattedTime,
-                    verifications = report.verificationCount,
                     icon = icon,
                     color = color,
                     background = background,
-                    onVerifyClick = { IncidentRepository.verifyReport(report.id) }
+                    onVerifyClick = { onVerifyIncident(report) }
                 )
             }
         }
@@ -159,7 +182,6 @@ fun AlertCardItem(
     description: String,
     distance: String,
     time: String,
-    verifications: Int,
     icon: ImageVector,
     color: Color,
     background: Color,
@@ -187,25 +209,11 @@ fun AlertCardItem(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Barra inferior de verificación comunitarias
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    color = EvacuBlueLight,
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text(
-                        text = "Verificado por $verifications usuario${if (verifications > 1) "s" else ""}",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = EvacuBlue,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                    )
-                }
-
                 Button(
                     onClick = onVerifyClick,
                     shape = RoundedCornerShape(12.dp),
@@ -222,7 +230,7 @@ fun AlertCardItem(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "+1 VERIFICAR",
+                        text = "VERIFICAR",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold
                     )
