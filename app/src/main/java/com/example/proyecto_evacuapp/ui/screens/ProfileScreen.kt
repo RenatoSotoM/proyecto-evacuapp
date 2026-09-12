@@ -1,6 +1,7 @@
 package com.example.proyecto_evacuapp.ui.screens
 
 import android.content.Context
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,7 +23,6 @@ import androidx.compose.material.icons.filled.DirectionsBike
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.WheelchairPickup
 import androidx.compose.material3.AlertDialog
@@ -30,11 +30,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -51,28 +53,35 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.proyecto_evacuapp.data.TransportMode
 import com.example.proyecto_evacuapp.data.UserProfile
 import com.example.proyecto_evacuapp.data.UserSessionState
+import com.example.proyecto_evacuapp.data.remote.RetrofitClient
+import com.example.proyecto_evacuapp.data.remote.UpdateMobilityProfileRequest
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlue
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlueLight
 import com.example.proyecto_evacuapp.ui.theme.SurfaceWhite
 import com.example.proyecto_evacuapp.ui.theme.TextPrimary
 import com.example.proyecto_evacuapp.ui.theme.TextSecondary
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 @Composable
 fun ProfileScreen() {
     var showEditDialog by remember { mutableStateOf(false) }
     var showLoginDialog by remember { mutableStateOf(false) }
-
     val context = LocalContext.current
     val user = UserSessionState.currentUser
 
-    val mobilityIcon = when (user.transportMode) {
-        TransportMode.VEHICLE -> Icons.Default.DirectionsCar
-        TransportMode.WALKING -> Icons.Default.DirectionsWalk
-        TransportMode.BICYCLE -> Icons.Default.DirectionsBike
-        TransportMode.REDUCED_MOBILITY -> Icons.Default.WheelchairPickup
+    val mobilityIcon = when (user.mobilityType) {
+        "VEHICULO" -> Icons.Default.DirectionsCar
+        "PEATON" -> Icons.Default.DirectionsWalk
+        "BICICLETA" -> Icons.Default.DirectionsBike
+        "PERSONA_MOVILIDAD_REDUCIDA" -> Icons.Default.WheelchairPickup
+        else -> Icons.Default.DirectionsCar
     }
 
     Column(
@@ -97,21 +106,9 @@ fun ProfileScreen() {
 
             TextButton(onClick = {
                 if (user.isLoggedIn) {
-                    // Limpiar SharedPreferences
                     val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
                     prefs.edit().clear().apply()
-
-                    // Resetear estado en memoria a invitado
-                    UserSessionState.currentUser = UserSessionState.currentUser.copy(
-                        id = "",
-                        name = "Usuario Invitado",
-                        email = "",
-                        role = "",
-                        isLoggedIn = false,
-                        transportMode = TransportMode.VEHICLE,
-                        companions = "Solo",
-                        locationZone = "San Bernardo, Santiago"
-                    )
+                    UserSessionState.clear()
                 } else {
                     showLoginDialog = true
                 }
@@ -136,9 +133,7 @@ fun ProfileScreen() {
                         modifier = Modifier.padding(8.dp).size(50.dp)
                     )
                 }
-
                 Spacer(modifier = Modifier.width(16.dp))
-
                 Column {
                     Text(
                         text = if (user.isLoggedIn) user.name else "Usuario Invitado",
@@ -147,7 +142,7 @@ fun ProfileScreen() {
                         color = TextPrimary
                     )
                     Text(
-                        text = user.locationZone,
+                        text = user.email,
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextSecondary
                     )
@@ -162,8 +157,13 @@ fun ProfileScreen() {
             color = TextPrimary
         )
 
-        ProfileItemRow("Tipo de movilidad", user.transportMode.label, mobilityIcon)
-        ProfileItemRow("Acompañantes", user.companions, Icons.Default.Person)
+        ProfileItemRow("Tipo de movilidad", user.mobilityType, mobilityIcon)
+        ProfileItemRow("Ruta accesible", if (user.requiresAccessibleRoute) "Sí" else "No", Icons.Default.WheelchairPickup)
+        ProfileItemRow("Viaja con menores", if (user.travelsWithMinors) "Sí" else "No", Icons.Default.Person)
+        ProfileItemRow("Nº acompañantes", user.companionCount.toString(), Icons.Default.Person)
+
+        ProfileItemRow("Modo legacy", user.transportMode.label, mobilityIcon)
+        ProfileItemRow("Acompañantes (texto)", user.companions, Icons.Default.Person)
         ProfileItemRow("Zona base offline", user.locationZone, Icons.Default.LocationOn)
 
         Button(
@@ -179,28 +179,23 @@ fun ProfileScreen() {
         }
     }
 
-    // Modal de Edición de Preferencias
     if (showEditDialog) {
         EditPreferencesDialog(
             currentProfile = user,
             onDismiss = { showEditDialog = false },
             onSave = { updated ->
                 UserSessionState.currentUser = updated
+                syncMobilityProfileToBackend(updated)
                 showEditDialog = false
             }
         )
     }
 
-    // Modal de Login / Registro
     if (showLoginDialog) {
         LoginRegisterDialog(
             onDismiss = { showLoginDialog = false },
             onLoginSuccess = { name, email ->
-                UserSessionState.currentUser = user.copy(
-                    name = name,
-                    email = email,
-                    isLoggedIn = true
-                )
+                UserSessionState.currentUser = user.copy(name = name, email = email, isLoggedIn = true)
                 showLoginDialog = false
             }
         )
@@ -213,7 +208,10 @@ fun EditPreferencesDialog(
     onDismiss: () -> Unit,
     onSave: (UserProfile) -> Unit
 ) {
-    var selectedMode by remember { mutableStateOf(currentProfile.transportMode) }
+    var selectedMobilityType by remember { mutableStateOf(currentProfile.mobilityType) }
+    var requiresAccessibleRoute by remember { mutableStateOf(currentProfile.requiresAccessibleRoute) }
+    var travelsWithMinors by remember { mutableStateOf(currentProfile.travelsWithMinors) }
+    var companionCount by remember { mutableStateOf(currentProfile.companionCount) }
     var companionsText by remember { mutableStateOf(currentProfile.companions) }
     var zoneText by remember { mutableStateOf(currentProfile.locationZone) }
 
@@ -221,28 +219,48 @@ fun EditPreferencesDialog(
         onDismissRequest = onDismiss,
         title = { Text("Editar Preferencias", fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Tipo de Movilidad:", fontWeight = FontWeight.SemiBold)
-                TransportMode.entries.forEach { mode ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.padding(16.dp)
+            ) {
+                Text("Tipo de movilidad:", fontWeight = FontWeight.SemiBold)
+                listOf("PEATON", "VEHICULO", "BICICLETA", "PERSONA_MOVILIDAD_REDUCIDA").forEach { mt ->
+                    Row(modifier = Modifier.fillMaxWidth()) {
                         RadioButton(
-                            selected = (selectedMode == mode),
-                            onClick = { selectedMode = mode }
+                            selected = selectedMobilityType == mt,
+                            onClick = { selectedMobilityType = mt }
                         )
-                        Text(mode.label)
+                        Text(mt)
                     }
                 }
-
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Checkbox(checked = requiresAccessibleRoute, onCheckedChange = { requiresAccessibleRoute = it })
+                    Text("Requiere ruta accesible")
+                }
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Checkbox(checked = travelsWithMinors, onCheckedChange = { travelsWithMinors = it })
+                    Text("Viaja con menores")
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Nº acompañantes: $companionCount")
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Slider(
+                        value = companionCount.toFloat(),
+                        onValueChange = { companionCount = it.roundToInt() },
+                        valueRange = 0f..20f,
+                        steps = 20
+                    )
+                }
                 OutlinedTextField(
                     value = companionsText,
                     onValueChange = { companionsText = it },
-                    label = { Text("Acompañantes") },
+                    label = { Text("Acompañantes (texto legacy)") },
                     singleLine = true
                 )
-
                 OutlinedTextField(
                     value = zoneText,
                     onValueChange = { zoneText = it },
@@ -253,22 +271,18 @@ fun EditPreferencesDialog(
         },
         confirmButton = {
             Button(onClick = {
-                onSave(
-                    currentProfile.copy(
-                        transportMode = selectedMode,
-                        companions = companionsText,
-                        locationZone = zoneText
-                    )
-                )
-            }) {
-                Text("Guardar")
-            }
+                onSave(currentProfile.copy(
+                    mobilityType = selectedMobilityType,
+                    requiresAccessibleRoute = requiresAccessibleRoute,
+                    travelsWithMinors = travelsWithMinors,
+                    companionCount = companionCount,
+                    companions = companionsText,
+                    locationZone = zoneText,
+                    transportMode = TransportMode.entries.find { it.backendValue == selectedMobilityType } ?: TransportMode.VEHICLE
+                ))
+            }) { Text("Guardar") }
         },
-        dismissButton = {
-            OutlinedButton(onClick = onDismiss) {
-                Text("Cancelar")
-            }
-        }
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("Cancelar") } }
     )
 }
 
@@ -318,9 +332,7 @@ fun LoginRegisterDialog(
                 Text(if (isRegister) "Registrar" else "Ingresar")
             }
         },
-        dismissButton = {
-            OutlinedButton(onClick = onDismiss) { Text("Cancelar") }
-        }
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("Cancelar") } }
     )
 }
 
@@ -342,6 +354,27 @@ fun ProfileItemRow(title: String, value: String, icon: ImageVector) {
                 Text(text = title, style = MaterialTheme.typography.labelMedium, color = TextSecondary)
                 Text(text = value, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = TextPrimary)
             }
+        }
+    }
+}
+
+private fun syncMobilityProfileToBackend(profile: UserProfile) {
+    CoroutineScope(Dispatchers.IO).launch {
+        try {
+            val dto = UpdateMobilityProfileRequest(
+                mobilityType = profile.mobilityType,
+                requiresAccessibleRoute = profile.requiresAccessibleRoute,
+                travelsWithMinors = profile.travelsWithMinors,
+                companionCount = profile.companionCount
+            )
+            val response = RetrofitClient.userApiService.updateMobilityProfile(dto)
+            if (!response.isSuccessful) {
+                Log.w("PROFILE", "Sync failed: ${response.code()} ${response.errorBody()?.string()}")
+            } else {
+                Log.d("PROFILE", "Mobility profile synced successfully")
+            }
+        } catch (e: Exception) {
+            Log.e("PROFILE", "Sync exception", e)
         }
     }
 }

@@ -36,10 +36,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.proyecto_evacuapp.data.remote.AuthResponse
+import com.example.proyecto_evacuapp.data.UserSessionState
 import com.example.proyecto_evacuapp.data.remote.RegisterRequest
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
-import com.example.proyecto_evacuapp.data.UserSessionState
+import com.example.proyecto_evacuapp.data.remote.UserMeResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -110,16 +110,26 @@ fun RegisterScreen(
                         .putString("user_role", user.role)
                         .apply()
 
-                    UserSessionState.currentUser = UserSessionState.currentUser.copy(
-                        id = user.id,
-                        name = user.name,
-                        email = user.email,
-                        role = user.role,
-                        isLoggedIn = true
-                    )
-
-                    isLoading = false
-                    onRegisterSuccess()
+                    coroutineScope.launch {
+                        try {
+                            val meResponse = withContext(Dispatchers.IO) {
+                                RetrofitClient.userApiService.getMe()
+                            }
+                            if (meResponse.isSuccessful && meResponse.body() != null) {
+                                UserSessionState.updateFromUserMeResponse(meResponse.body()!!)
+                            } else {
+                                UserSessionState.currentUser = UserSessionState.currentUser.copy(
+                                    id = user.id, name = user.name, email = user.email, role = user.role, isLoggedIn = true
+                                )
+                            }
+                        } catch (e: Exception) {
+                            UserSessionState.currentUser = UserSessionState.currentUser.copy(
+                                id = user.id, name = user.name, email = user.email, role = user.role, isLoggedIn = true
+                            )
+                        }
+                        isLoading = false
+                        onRegisterSuccess()
+                    }
                 } else {
                     isLoading = false
                     when (response.code()) {

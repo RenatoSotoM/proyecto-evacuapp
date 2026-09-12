@@ -10,9 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -32,14 +30,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardActions
+import androidx.compose.ui.text.input.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.proyecto_evacuapp.data.remote.AuthResponse
+import com.example.proyecto_evacuapp.data.UserSessionState
 import com.example.proyecto_evacuapp.data.remote.LoginRequest
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
-import com.example.proyecto_evacuapp.data.UserSessionState
+import com.example.proyecto_evacuapp.data.remote.UserMeResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -87,16 +87,27 @@ fun LoginScreen(
                         .putString("user_role", user.role)
                         .apply()
 
-                    UserSessionState.currentUser = UserSessionState.currentUser.copy(
-                        id = user.id,
-                        name = user.name,
-                        email = user.email,
-                        role = user.role,
-                        isLoggedIn = true
-                    )
-
-                    isLoading = false
-                    onLoginSuccess()
+                    coroutineScope.launch {
+                        try {
+                            val meResponse = withContext(Dispatchers.IO) {
+                                RetrofitClient.userApiService.getMe()
+                            }
+                            if (meResponse.isSuccessful && meResponse.body() != null) {
+                                UserSessionState.updateFromUserMeResponse(meResponse.body()!!)
+                            } else {
+                                UserSessionState.currentUser = UserSessionState.currentUser.copy(
+                                    id = user.id, name = user.name, email = user.email, role = user.role, isLoggedIn = true
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Log.w("LOGIN", "getMe failed, using basic user data", e)
+                            UserSessionState.currentUser = UserSessionState.currentUser.copy(
+                                id = user.id, name = user.name, email = user.email, role = user.role, isLoggedIn = true
+                            )
+                        }
+                        isLoading = false
+                        onLoginSuccess()
+                    }
                 } else {
                     isLoading = false
                     when (response.code()) {
