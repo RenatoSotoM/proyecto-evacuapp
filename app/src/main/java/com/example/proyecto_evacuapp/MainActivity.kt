@@ -1,5 +1,5 @@
 package com.example.proyecto_evacuapp
-
+// Funcional para registros y logins
 import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
