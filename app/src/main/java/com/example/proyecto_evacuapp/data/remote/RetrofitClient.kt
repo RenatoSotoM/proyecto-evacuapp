@@ -9,7 +9,6 @@ object RetrofitClient {
 
     // 📱 Para dispositivo físico conectado a tu Wi-Fi:
     private const val BASE_URL = "http://192.168.100.12:3000/api/v1/"
-
     // 💻 Para emulador de Android Studio:
     // private const val BASE_URL = "http://10.0.2.2:3000/api/v1/"
 
