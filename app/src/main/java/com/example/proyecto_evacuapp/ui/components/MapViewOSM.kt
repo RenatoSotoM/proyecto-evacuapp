@@ -3,6 +3,7 @@ package com.example.proyecto_evacuapp.ui.components
 import android.annotation.SuppressLint
 import android.graphics.Color as AndroidColor
 import android.view.MotionEvent
+import com.example.proyecto_evacuapp.R
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -162,7 +163,7 @@ fun MapViewOSM(
                 snippet = "${zone.description ?: "Zona segura"}\nCapacidad: ${zone.capacity ?: "N/A"}"
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
 
-                icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_mylocation)
+                icon = ContextCompat.getDrawable(context, R.drawable.ic_safe_zone)
 
                 setOnMarkerClickListener { m, _ ->
                     m.showInfoWindow()
@@ -186,10 +187,10 @@ fun MapViewOSM(
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
 
                 val drawableRes = when (poi.type.uppercase()) {
-                    "FIRE_STATION" -> android.R.drawable.ic_menu_agenda // Representativo de Bomberos/Emergencia
-                    "HEALTH_CENTER" -> android.R.drawable.ic_menu_add // Representativo de Salud / Cruz / Hospital
-                    "POLICE", "POLICE_STATION" -> android.R.drawable.ic_menu_compass // Representativo de Seguridad / Policía
-                    else -> android.R.drawable.ic_menu_info_details
+                    "FIRE_STATION" -> R.drawable.ic_fire_station   // Tu PNG de Bomberos
+                    "HEALTH_CENTER" -> R.drawable.ic_health_center // Tu PNG de CESFAM/Salud
+                    "POLICE", "POLICE_STATION" -> R.drawable.ic_police // Tu PNG de Policía
+                    else -> R.drawable.ic_safe_zone
                 }
                 icon = ContextCompat.getDrawable(context, drawableRes)
 
