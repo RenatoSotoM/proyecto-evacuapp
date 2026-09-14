@@ -9,6 +9,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -23,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.proyecto_evacuapp.R
+import com.example.proyecto_evacuapp.data.remote.PointOfInterestResponse
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.data.remote.SafeZoneNearbyDto
 import com.example.proyecto_evacuapp.ui.components.ConnectivityBadge
@@ -86,8 +88,11 @@ fun MapScreen() {
     var recenterTrigger by remember { mutableIntStateOf(0) }
     var overviewTrigger by remember { mutableIntStateOf(0) }
 
-    // ESTADO DE ZONAS SEGURAS
+    // ESTADO DE ZONAS SEGURAS Y PUNTOS DE INTERÉS
     var safeZones by remember { mutableStateOf<List<SafeZoneNearbyDto>>(emptyList()) }
+    var pointsOfInterest by remember { mutableStateOf<List<PointOfInterestResponse>>(emptyList()) }
+    var selectedPoiType by remember { mutableStateOf<String?>(null) }
+    var isFetchingPois by remember { mutableStateOf(false) }
 
     var hasLocationPermission by remember {
         mutableStateOf(
@@ -152,20 +157,7 @@ fun MapScreen() {
             name = nearest.name
         )
     }
-
-    fun stopNavigation() {
-        isNavigating = false
-        currentStepIndex = 0
-        customDestination = null
-        customDestinationName = ""
-        customRoutePoints = emptyList()
-        routeSteps = emptyList()
-        customDistanceText = ""
-        customDurationText = ""
-        isAutomaticEvacuation = false
-        CustomVoicePlayer.stop()
-    }
-
+    // 1. PRIMERO DECLARAS ESTA:
     fun calculateRouteToPoint(
         targetPoint: GeoPoint,
         targetName: String = "",
@@ -201,6 +193,62 @@ fun MapScreen() {
             isCalculatingRoute = false
         }
     }
+
+    // 2. LUEGO PUEDES USARLA DENTRO DE ESTA:
+    fun loadPointsOfInterest(type: String? = null) {
+        val lat = currentLatitude
+        val lng = currentLongitude
+        if (lat != null && lng != null) {
+            isFetchingPois = true
+            coroutineScope.launch {
+                try {
+                    val response = RetrofitClient.pointsOfInterestApi.getNearbyPointsOfInterest(
+                        lat = lat,
+                        lng = lng,
+                        radius = 30000.0,
+                        type = type
+                    )
+
+                    if (response.isSuccessful) {
+                        val list = response.body() ?: emptyList()
+
+                        // 👈 Solo guardamos los puntos para que aparezcan en el mapa o interfaz
+                        pointsOfInterest = list
+
+                        if (list.isEmpty()) {
+                            Toast.makeText(context, "No se encontraron elementos cercanos", Toast.LENGTH_SHORT).show()
+                        }
+                        // ❌ ELIMINADO: Ya no llamamos a calculateRouteToPoint aquí de forma automática.
+                    }
+                } catch (e: Exception) {
+                    Log.e("POIS", "Error al obtener puntos: ${e.message}")
+                } finally {
+                    isFetchingPois = false
+                }
+            }
+        }
+    }
+
+    // Cargar POIs automáticamente al obtener ubicación
+    LaunchedEffect(currentLatitude, currentLongitude) {
+        if (currentLatitude != null && currentLongitude != null) {
+            loadPointsOfInterest(selectedPoiType)
+        }
+    }
+
+    fun stopNavigation() {
+        isNavigating = false
+        currentStepIndex = 0
+        customDestination = null
+        customDestinationName = ""
+        customRoutePoints = emptyList()
+        routeSteps = emptyList()
+        customDistanceText = ""
+        customDurationText = ""
+        isAutomaticEvacuation = false
+        CustomVoicePlayer.stop()
+    }
+
 
     fun startAutomaticEvacuation() {
         val startLat = currentLatitude
@@ -323,6 +371,16 @@ fun MapScreen() {
             destinationPoint = customDestination,
             routePoints = customRoutePoints,
             safeZones = safeZones,
+            pointsOfInterest = pointsOfInterest,
+            onPoiSelected = { poi ->
+                if (!isNavigating) {
+                    isTrackingUser = false
+                    calculateRouteToPoint(
+                        targetPoint = GeoPoint(poi.latitude, poi.longitude),
+                        targetName = poi.name
+                    )
+                }
+            },
             onSafeZoneSelected = { point: GeoPoint, name: String ->
                 if (!isNavigating) {
                     isTrackingUser = false
@@ -416,7 +474,7 @@ fun MapScreen() {
             }
         }
 
-        // BANNER DE INSTRUCCIÓN AL NAVEGAR
+        // BANNER DE INSTRUCCIÓN AL NAVEGAR O FILTROS SUPERIORES
         if (isNavigating && routeSteps.isNotEmpty() && currentStepIndex < routeSteps.size) {
             val activeStep = routeSteps[currentStepIndex]
             Card(
@@ -471,7 +529,8 @@ fun MapScreen() {
                     .fillMaxWidth()
                     .statusBarsPadding()
                     .padding(16.dp)
-                    .align(Alignment.TopCenter)
+                    .align(Alignment.TopCenter),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -489,6 +548,73 @@ fun MapScreen() {
                         backgroundColor = EvacuBlueLight,
                         icon = Icons.Default.LocationOn
                     )
+                }
+
+                // BARRA HORIZONTAL DE FILTROS DE PUNTOS DE INTERÉS
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item {
+                        FilterChip(
+                            selected = selectedPoiType == null,
+                            onClick = {
+                                selectedPoiType = null
+                                loadPointsOfInterest(null)
+                            },
+                            label = { Text("Todos") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = SurfaceWhite,
+                                selectedContainerColor = EvacuBlue,
+                                selectedLabelColor = Color.White
+                            )
+                        )
+                    }
+                    item {
+                        FilterChip(
+                            selected = selectedPoiType == "FIRE_STATION",
+                            onClick = {
+                                selectedPoiType = "FIRE_STATION"
+                                loadPointsOfInterest("FIRE_STATION")
+                            },
+                            label = { Text("🚒 Bomberos") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = SurfaceWhite,
+                                selectedContainerColor = EvacuBlue,
+                                selectedLabelColor = Color.White
+                            )
+                        )
+                    }
+                    item {
+                        FilterChip(
+                            selected = selectedPoiType == "HEALTH_CENTER",
+                            onClick = {
+                                selectedPoiType = "HEALTH_CENTER"
+                                loadPointsOfInterest("HEALTH_CENTER")
+                            },
+                            label = { Text("🏥 CESFAM") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = SurfaceWhite,
+                                selectedContainerColor = EvacuBlue,
+                                selectedLabelColor = Color.White
+                            )
+                        )
+                    }
+                    item {
+                        FilterChip(
+                            selected = selectedPoiType == "POLICE",
+                            onClick = {
+                                selectedPoiType = "POLICE"
+                                loadPointsOfInterest("POLICE")
+                            },
+                            label = { Text("👮 Policía") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = SurfaceWhite,
+                                selectedContainerColor = EvacuBlue,
+                                selectedLabelColor = Color.White
+                            )
+                        )
+                    }
                 }
             }
         }

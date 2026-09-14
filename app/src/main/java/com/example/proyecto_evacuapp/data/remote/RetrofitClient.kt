@@ -1,9 +1,13 @@
 package com.example.proyecto_evacuapp.data.remote
 
 import okhttp3.OkHttpClient
+import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import retrofit2.http.GET
+import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
+
 
 object RetrofitClient {
 
@@ -12,7 +16,7 @@ object RetrofitClient {
     // 💻 Para emulador de Android Studio:
     // private const val BASE_URL = "http://10.0.2.2:3000/api/v1/"
 
-    // Almacenamiento temporal en memoria del Token JWT (reemplazar por EncryptedSharedPreferences/DataStore en prod)
+    // Almacenamiento temporal en memoria del Token JWT
     var authToken: String? = null
 
     private val okHttpClient = OkHttpClient.Builder()
@@ -51,6 +55,10 @@ object RetrofitClient {
     }
 
     val safeZonesApi: SafeZonesApiService by lazy {
-        retrofit.create(SafeZonesApiService::class.java) // O usando la instancia de Retrofit que ya tengas creada en ese archivo
+        retrofit.create(SafeZonesApiService::class.java)
+    }
+
+    val pointsOfInterestApi: PointsOfInterestApi by lazy {
+        retrofit.create(PointsOfInterestApi::class.java)
     }
 }

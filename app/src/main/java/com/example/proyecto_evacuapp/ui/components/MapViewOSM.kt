@@ -15,6 +15,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.proyecto_evacuapp.data.remote.PointOfInterestResponse
 import com.example.proyecto_evacuapp.data.remote.SafeZoneNearbyDto
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapEventsReceiver
@@ -40,6 +41,8 @@ fun MapViewOSM(
     destinationPoint: GeoPoint? = null,
     routePoints: List<GeoPoint> = emptyList(),
     safeZones: List<SafeZoneNearbyDto> = emptyList(),
+    pointsOfInterest: List<PointOfInterestResponse> = emptyList(), // 👈 Añadido
+    onPoiSelected: (PointOfInterestResponse) -> Unit = {},         // 👈 Añadido
     onSafeZoneSelected: (GeoPoint, String) -> Unit = { _, _ -> },
     onMapTouched: () -> Unit = {},
     onMapLongClick: (GeoPoint) -> Unit = {}
@@ -82,8 +85,15 @@ fun MapViewOSM(
         }
     }
 
-    // Capa independiente para pintar las 16 Zonas Seguras
+    // Capa independiente para pintar las Zonas Seguras
     val safeZonesOverlay = remember(mapView) {
+        FolderOverlay().also {
+            mapView.overlays.add(it)
+        }
+    }
+
+    // Capa independiente para pintar los Puntos de Interés
+    val poiOverlay = remember(mapView) {
         FolderOverlay().also {
             mapView.overlays.add(it)
         }
@@ -152,7 +162,8 @@ fun MapViewOSM(
                 snippet = "${zone.description ?: "Zona segura"}\nCapacidad: ${zone.capacity ?: "N/A"}"
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
 
-                // Al tocar una zona segura, muestra la burbuja e inicia el ruteo
+                icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_mylocation)
+
                 setOnMarkerClickListener { m, _ ->
                     m.showInfoWindow()
                     onSafeZoneSelected(m.position, m.title ?: "")
@@ -160,6 +171,35 @@ fun MapViewOSM(
                 }
             }
             safeZonesOverlay.add(marker)
+        }
+        mapView.invalidate()
+    }
+
+    // Renderizar Puntos de Interés desde la API
+    LaunchedEffect(pointsOfInterest) {
+        poiOverlay.items.clear()
+        pointsOfInterest.forEach { poi ->
+            val marker = Marker(mapView).apply {
+                position = GeoPoint(poi.latitude, poi.longitude)
+                title = poi.name
+                snippet = "Tipo: ${poi.type} - ${poi.address ?: "Sin dirección"}"
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+
+                val drawableRes = when (poi.type.uppercase()) {
+                    "FIRE_STATION" -> android.R.drawable.ic_menu_agenda // Representativo de Bomberos/Emergencia
+                    "HEALTH_CENTER" -> android.R.drawable.ic_menu_add // Representativo de Salud / Cruz / Hospital
+                    "POLICE", "POLICE_STATION" -> android.R.drawable.ic_menu_compass // Representativo de Seguridad / Policía
+                    else -> android.R.drawable.ic_menu_info_details
+                }
+                icon = ContextCompat.getDrawable(context, drawableRes)
+
+                setOnMarkerClickListener { m, _ ->
+                    m.showInfoWindow()
+                    onPoiSelected(poi)
+                    true
+                }
+            }
+            poiOverlay.add(marker)
         }
         mapView.invalidate()
     }
@@ -177,7 +217,7 @@ fun MapViewOSM(
         mapView.invalidate()
     }
 
-    // Vista General de la Ruta (Ajustar zoom para ver toda la ruta)
+    // Vista General de la Ruta
     LaunchedEffect(overviewTrigger) {
         if (overviewTrigger > 0 && routePoints.isNotEmpty()) {
             val boundingBox = BoundingBox.fromGeoPoints(routePoints)
