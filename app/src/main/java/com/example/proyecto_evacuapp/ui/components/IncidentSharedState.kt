@@ -52,6 +52,26 @@ object IncidentSharedState {
         persist(localIncident)
     }
 
+    fun markAsSynced(
+        localId: String,
+        remoteId: String,
+        status: String
+    ) {
+        val index = incidentList.indexOfFirst { it.localId == localId }
+
+        if (index != -1) {
+            val current = incidentList[index]
+            val updated = current.copy(
+                remoteId = remoteId,
+                status = status.toLocalStatus(),
+                updatedAtMillis = System.currentTimeMillis()
+            )
+
+            replaceInMemory(updated)
+            persist(updated)
+        }
+    }
+
     fun confirmIncident(localId: String) {
         updateVote(
             localId = localId,
@@ -181,4 +201,14 @@ private fun IncidentEntity.toSharedIncident(): SharedIncident {
             .toSet(),
         isOwnReport = isOwnReport
     )
+}
+
+fun String.toLocalStatus(): IncidentStatus {
+    return when (this.uppercase()) {
+        "PENDING" -> IncidentStatus.PENDING
+        "PROBABLE" -> IncidentStatus.PROBABLE
+        "VERIFIED" -> IncidentStatus.VERIFIED
+        "REJECTED" -> IncidentStatus.REJECTED
+        else -> IncidentStatus.SYNC_FAILED
+    }
 }

@@ -74,6 +74,13 @@ import com.example.proyecto_evacuapp.ui.theme.WarningAmberLight
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import android.util.Log
+import androidx.compose.runtime.rememberCoroutineScope
+import com.example.proyecto_evacuapp.data.remote.RetrofitClient
+import com.example.proyecto_evacuapp.data.remote.VoteIncidentNetworkDto
+import com.example.proyecto_evacuapp.data.remote.IncidentVoteResponseDto
+import com.example.proyecto_evacuapp.data.repository.IncidentRepository
+import kotlinx.coroutines.launch
 
 private data class ReportType(
     val code: String,
@@ -85,6 +92,10 @@ private data class ReportType(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ReportsScreen() {
+    val scope = rememberCoroutineScope()
+    val repository = remember {
+        IncidentRepository(RetrofitClient.incidentApiService)
+    }
     val reportTypes = remember {
         listOf(
             ReportType(
@@ -227,19 +238,51 @@ fun ReportsScreen() {
                         savedMessage = null
                     },
                     onSave = {
-                        IncidentSharedState.addLocalIncident(
-                            SharedIncident(
-                                type = reportTypeToIncidentType(activeType.code),
-                                severity = severityToIncidentSeverity(selectedSeverity),
-                                description = reportDescription.trim().ifBlank {
-                                    "Sin descripción adicional."
-                                },
-                                latitude = demoLatitude,
-                                longitude = demoLongitude,
-                                status = IncidentStatus.LOCAL_PENDING,
-                                affectedSegmentIds = affectedSegmentsFor(activeType.code)
-                            )
+                        val incident = SharedIncident(
+                            type = reportTypeToIncidentType(activeType.code),
+                            severity = severityToIncidentSeverity(selectedSeverity),
+                            description = reportDescription.trim().ifBlank {
+                                "Sin descripción adicional."
+                            },
+                            latitude = demoLatitude,
+                            longitude = demoLongitude,
+                            status = IncidentStatus.LOCAL_PENDING,
+                            affectedSegmentIds = affectedSegmentsFor(activeType.code)
                         )
+
+                        IncidentSharedState.addLocalIncident(incident)
+
+                        scope.launch {
+                            try {
+                                val response = IncidentRepository(
+                                    RetrofitClient.incidentApiService
+                                ).createIncident(incident)
+
+                                if (response.isSuccessful) {
+                                    val savedIncident = response.body()
+                                    if (savedIncident != null) {
+                                        IncidentSharedState.markAsSynced(
+                                            localId = incident.localId,
+                                            remoteId = savedIncident.id,
+                                            status = savedIncident.status
+                                        )
+
+                                        Log.d(
+                                            "INCIDENT",
+                                            "Incidente sincronizado. ID: ${savedIncident.id}, estado: ${savedIncident.status}"
+                                        )
+                                    }
+                                } else {
+                                    Log.e(
+                                        "INCIDENT",
+                                        "Error HTTP ${response.code()}: ${response.errorBody()?.string()}"
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                Log.e("INCIDENT", "Error de conexión", e)
+                            }
+                        }
+
                         savedMessage = "Reporte guardado localmente. Se sincronizará cuando exista conexión."
                         showReportForm = false
                         selectedType = null
@@ -294,10 +337,64 @@ fun ReportsScreen() {
                 SharedReportCard(
                     report = report,
                     onConfirm = {
-                        IncidentSharedState.confirmIncident(report.localId)
+                        val remoteId = report.remoteId
+                        if (remoteId == null) {
+                            Log.e("VOTE", "No se puede confirmar: el incidente no tiene ID remoto")
+                            IncidentSharedState.confirmIncident(report.localId)
+                            return@SharedReportCard
+                        }
+
+                        scope.launch {
+                            try {
+                                val response = repository.voteIncident(
+                                    remoteId = remoteId,
+                                    vote = "CONFIRM"
+                                )
+
+                                if (response.isSuccessful) {
+                                    val updated = response.body()
+                                    Log.d(
+                                        "VOTE",
+                                        "Confirmación guardada. α=${updated?.alpha}, β=${updated?.beta}, estado=${updated?.status}"
+                                    )
+                                    IncidentSharedState.confirmIncident(report.localId)
+                                } else {
+                                    Log.e("VOTE", "HTTP ${response.code()}: ${response.errorBody()?.string()}")
+                                }
+                            } catch (e: Exception) {
+                                Log.e("VOTE", "Error al votar", e)
+                            }
+                        }
                     },
                     onReject = {
-                        IncidentSharedState.rejectIncident(report.localId)
+                        val remoteId = report.remoteId
+                        if (remoteId == null) {
+                            Log.e("VOTE", "No se puede descartar: el incidente no tiene ID remoto")
+                            IncidentSharedState.rejectIncident(report.localId)
+                            return@SharedReportCard
+                        }
+
+                        scope.launch {
+                            try {
+                                val response = repository.voteIncident(
+                                    remoteId = remoteId,
+                                    vote = "REJECT"
+                                )
+
+                                if (response.isSuccessful) {
+                                    val updated = response.body()
+                                    Log.d(
+                                        "VOTE",
+                                        "Rechazo guardado. α=${updated?.alpha}, β=${updated?.beta}, estado=${updated?.status}"
+                                    )
+                                    IncidentSharedState.rejectIncident(report.localId)
+                                } else {
+                                    Log.e("VOTE", "HTTP ${response.code()}: ${response.errorBody()?.string()}")
+                                }
+                            } catch (e: Exception) {
+                                Log.e("VOTE", "Error al votar", e)
+                            }
+                        }
                     }
                 )
             }

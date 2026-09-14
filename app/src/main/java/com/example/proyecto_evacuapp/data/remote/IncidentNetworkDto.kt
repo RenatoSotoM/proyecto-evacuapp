@@ -19,3 +19,15 @@ data class IncidentResponseDto(
     @SerializedName("longitude") val longitude: Double,
     @SerializedName("status") val status: String
 )
+
+data class VoteIncidentNetworkDto(
+    @SerializedName("vote") val vote: String
+)
+
+data class IncidentVoteResponseDto(
+    @SerializedName("id") val id: String,
+    @SerializedName("alpha") val alpha: Int,
+    @SerializedName("beta") val beta: Int,
+    @SerializedName("confidence") val confidence: Double,
+    @SerializedName("status") val status: String
+)

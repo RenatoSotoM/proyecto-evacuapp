@@ -4,6 +4,7 @@ import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.Path
 
 interface IncidentApiService {
 
@@ -12,4 +13,10 @@ interface IncidentApiService {
 
     @GET("incidents")
     suspend fun getIncidents(): Response<List<IncidentResponseDto>>
+
+    @POST("incidents/{id}/votes")
+    suspend fun voteIncident(
+        @Path("id") incidentId: String,
+        @Body dto: VoteIncidentNetworkDto
+    ): Response<IncidentVoteResponseDto>
 }

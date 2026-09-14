@@ -6,6 +6,7 @@ import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
 import android.os.Looper
+import android.util.Log
 import android.view.MotionEvent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,6 +27,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.example.proyecto_evacuapp.R
+import com.example.proyecto_evacuapp.data.remote.IncidentResponseDto
+import com.example.proyecto_evacuapp.data.remote.RetrofitClient
+import com.example.proyecto_evacuapp.data.repository.IncidentRepository
 import com.example.proyecto_evacuapp.ui.components.ConnectivityBadge
 import com.example.proyecto_evacuapp.ui.components.OsrmRoutingService
 import com.example.proyecto_evacuapp.ui.components.SosMeshtaticMenu
@@ -54,7 +58,8 @@ data class MapBundle(
     val mapView: MapView,
     val userMarker: Marker,
     val destinationMarker: Marker,
-    val routePolyline: Polyline
+    val routePolyline: Polyline,
+    val incidentMarkers: MutableMap<String, Marker> = mutableMapOf()
 )
 
 private fun formatDistance(meters: Double): String {
@@ -128,6 +133,35 @@ fun MapScreen() {
 
     var isNavigating by remember { mutableStateOf(false) }
     var currentStepIndex by remember { mutableIntStateOf(0) }
+
+    var remoteIncidents by remember {
+        mutableStateOf<List<IncidentResponseDto>>(emptyList())
+    }
+
+    LaunchedEffect(Unit) {
+        try {
+            val response = IncidentRepository(
+                RetrofitClient.incidentApiService
+            ).getIncidents()
+
+            if (response.isSuccessful) {
+                remoteIncidents = response.body().orEmpty()
+
+                Log.d(
+                    "MAP_INCIDENTS",
+                    "Incidentes cargados: ${remoteIncidents.size}"
+                )
+            } else {
+                Log.e(
+                    "MAP_INCIDENTS",
+                    "GET /incidents HTTP ${response.code()}: " +
+                            response.errorBody()?.string()
+                )
+            }
+        } catch (e: Exception) {
+            Log.e("MAP_INCIDENTS", "Error al cargar incidentes", e)
+        }
+    }
 
     fun stopNavigation() {
         isNavigating = false
@@ -298,6 +332,7 @@ fun MapScreen() {
             isTrackingUser = isTrackingUser,
             destinationPoint = customDestination,
             routePoints = customRoutePoints,
+            incidents = remoteIncidents,
             onMapTouched = { isTrackingUser = false },
             onMapLongClick = { point ->
                 if (!isNavigating) {
@@ -605,6 +640,7 @@ fun MapViewOSM(
     isTrackingUser: Boolean,
     destinationPoint: GeoPoint?,
     routePoints: List<GeoPoint>,
+    incidents: List<IncidentResponseDto>,
     onMapTouched: () -> Unit,
     onMapLongClick: (GeoPoint) -> Unit
 ) {
@@ -690,6 +726,81 @@ fun MapViewOSM(
             mapBundle.routePolyline.setPoints(emptyList())
         }
         mapBundle.mapView.invalidate()
+    }
+
+    LaunchedEffect(incidents) {
+        val map = mapBundle.mapView
+        val currentIds = incidents.map { it.id }.toSet()
+
+        // Elimina marcadores de registros ya inexistentes en el backend.
+        val obsoleteIds = mapBundle.incidentMarkers.keys
+            .filter { it !in currentIds }
+
+        obsoleteIds.forEach { id ->
+            mapBundle.incidentMarkers[id]?.let { marker ->
+                map.overlays.remove(marker)
+            }
+            mapBundle.incidentMarkers.remove(id)
+        }
+
+        // Crea o actualiza marcadores de cada incidente remoto.
+        incidents.forEach { incident ->
+            val marker = mapBundle.incidentMarkers[incident.id]
+                ?: Marker(map).also { newMarker ->
+                    newMarker.setAnchor(
+                        Marker.ANCHOR_CENTER,
+                        Marker.ANCHOR_BOTTOM
+                    )
+                    mapBundle.incidentMarkers[incident.id] = newMarker
+                    map.overlays.add(newMarker)
+                }
+
+            marker.position = GeoPoint(
+                incident.latitude,
+                incident.longitude
+            )
+
+            marker.title = incident.type.replace("_", " ")
+
+            marker.subDescription = buildString {
+                append("Severidad: ${incident.severity}")
+                append("\nEstado: ${incident.status}")
+
+                incident.description
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { description ->
+                        append("\n$description")
+                    }
+            }
+
+            marker.isEnabled = true
+
+            Log.d(
+                "MAP_MARKERS",
+                "id=${incident.id}, " +
+                        "estado backend=${incident.status}, " +
+                        "lat=${incident.latitude}, lon=${incident.longitude}"
+            )
+        }
+
+        map.invalidate()
+
+        Log.d(
+            "MAP_MARKERS",
+            "Marcadores activos=${mapBundle.incidentMarkers.size}; " +
+                    "overlays totales=${map.overlays.size}"
+        )
+
+        // Centrar temporalmente para prueba
+        incidents.firstOrNull()?.let { firstIncident ->
+            map.controller.setZoom(16.0)
+            map.controller.setCenter(
+                GeoPoint(
+                    firstIncident.latitude,
+                    firstIncident.longitude
+                )
+            )
+        }
     }
 
     LaunchedEffect(overviewTrigger) {
