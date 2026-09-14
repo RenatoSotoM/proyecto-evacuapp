@@ -18,8 +18,11 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.proyecto_evacuapp.data.remote.PointOfInterestResponse
 import com.example.proyecto_evacuapp.data.remote.SafeZoneNearbyDto
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapEventsReceiver
+import org.osmdroid.tileprovider.cachemanager.CacheManager
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
@@ -144,6 +147,12 @@ fun MapViewOSM(
         }
     }
 
+    LaunchedEffect(latitude, longitude) {
+        if (latitude != null && longitude != null) {
+            precargarMapaLocal(mapView, latitude, longitude)
+        }
+    }
+
     // Re-centrar Cámara
     LaunchedEffect(recenterTrigger) {
         if (recenterTrigger > 0 && latitude != null && longitude != null) {
@@ -246,4 +255,32 @@ fun MapViewOSM(
         factory = { mapView },
         modifier = modifier.fillMaxSize()
     )
+}
+
+// 1. Pega esta función auxiliar al final de tu archivo MapViewOSM.kt
+private fun precargarMapaLocal(mapView: MapView, currentLat: Double, currentLng: Double) {
+    kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+        try {
+            val cacheManager = CacheManager(mapView)
+
+            // Radio de 30 km aprox (delta de 0.3 lat / 0.35 lng)
+            val deltaLat = 0.3
+            val deltaLng = 0.35
+
+            val box = BoundingBox(
+                currentLat + deltaLat,
+                currentLng + deltaLng,
+                currentLat - deltaLat,
+                currentLng - deltaLng
+            )
+
+            // Pasamos 'null' como último parámetro para evitar implementar
+            // todos los métodos obligatorios de la interfaz callback de osmdroid.
+            cacheManager.downloadAreaAsync(mapView.context, box, 13, 16, null)
+
+            android.util.Log.d("OFFLINE_MAP", "Proceso de descarga offline de 30km iniciado.")
+        } catch (e: Exception) {
+            android.util.Log.e("OFFLINE_MAP", "Error al iniciar caché offline: ${e.message}")
+        }
+    }
 }
