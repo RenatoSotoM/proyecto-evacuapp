@@ -1,12 +1,10 @@
 package com.example.proyecto_evacuapp.ui.screens
 
 import android.Manifest
-import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
-import android.graphics.Color as AndroidColor
 import android.os.Looper
-import android.view.MotionEvent
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,10 +21,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.example.proyecto_evacuapp.R
+import com.example.proyecto_evacuapp.data.remote.RetrofitClient
+import com.example.proyecto_evacuapp.data.remote.SafeZoneNearbyDto
 import com.example.proyecto_evacuapp.ui.components.ConnectivityBadge
+import com.example.proyecto_evacuapp.ui.components.MapViewOSM
 import com.example.proyecto_evacuapp.ui.components.OsrmRoutingService
 import com.example.proyecto_evacuapp.ui.components.SosMeshtaticMenu
 import com.example.proyecto_evacuapp.ui.components.StepInstruction
@@ -40,21 +40,11 @@ import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.launch
-import org.osmdroid.events.MapEventsReceiver
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
-import org.osmdroid.views.MapView
-import org.osmdroid.views.overlay.MapEventsOverlay
-import org.osmdroid.views.overlay.Marker
-import org.osmdroid.views.overlay.Polyline
 
-// Clase de soporte superior para evitar errores de destructuring
-data class MapBundle(
-    val mapView: MapView,
-    val userMarker: Marker,
-    val destinationMarker: Marker,
-    val routePolyline: Polyline
+data class RecommendedSafeZone(
+    val point: GeoPoint,
+    val name: String
 )
 
 private fun formatDistance(meters: Double): String {
@@ -96,6 +86,9 @@ fun MapScreen() {
     var recenterTrigger by remember { mutableIntStateOf(0) }
     var overviewTrigger by remember { mutableIntStateOf(0) }
 
+    // ESTADO DE ZONAS SEGURAS
+    var safeZones by remember { mutableStateOf<List<SafeZoneNearbyDto>>(emptyList()) }
+
     var hasLocationPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -128,6 +121,37 @@ fun MapScreen() {
 
     var isNavigating by remember { mutableStateOf(false) }
     var currentStepIndex by remember { mutableIntStateOf(0) }
+
+    // Cargar zonas seguras cercanas desde la API (30 km de radio)
+    LaunchedEffect(currentLatitude, currentLongitude) {
+        val lat = currentLatitude
+        val lng = currentLongitude
+        if (lat != null && lng != null) {
+            try {
+                val response = RetrofitClient.safeZonesApi.getNearbySafeZones(lat, lng, 30000.0)
+                if (response.isSuccessful) {
+                    safeZones = response.body() ?: emptyList()
+                    Log.d("SAFE_ZONES", "Zonas seguras cargadas: ${safeZones.size}")
+                } else {
+                    Log.e("SAFE_ZONES", "Error API: ${response.code()}")
+                }
+            } catch (e: Exception) {
+                Log.e("SAFE_ZONES", "Error de red al obtener zonas seguras: ${e.message}")
+            }
+        }
+    }
+
+    fun findRecommendedSafeZone(userPoint: GeoPoint): RecommendedSafeZone? {
+        if (safeZones.isEmpty()) return null
+        val nearest = safeZones.minByOrNull { zone ->
+            userPoint.distanceToAsDouble(GeoPoint(zone.latitude, zone.longitude))
+        } ?: return null
+
+        return RecommendedSafeZone(
+            point = GeoPoint(nearest.latitude, nearest.longitude),
+            name = nearest.name
+        )
+    }
 
     fun stopNavigation() {
         isNavigating = false
@@ -190,7 +214,7 @@ fun MapScreen() {
         val nearestSafeZone = findRecommendedSafeZone(userPoint)
 
         if (nearestSafeZone == null) {
-            Toast.makeText(context, "⚠️ No hay zonas seguras registradas dentro de 15 km", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "⚠️ No hay zonas seguras registradas", Toast.LENGTH_LONG).show()
             return
         }
 
@@ -298,8 +322,15 @@ fun MapScreen() {
             isTrackingUser = isTrackingUser,
             destinationPoint = customDestination,
             routePoints = customRoutePoints,
+            safeZones = safeZones,
+            onSafeZoneSelected = { point: GeoPoint, name: String ->
+                if (!isNavigating) {
+                    isTrackingUser = false
+                    calculateRouteToPoint(targetPoint = point, targetName = name)
+                }
+            },
             onMapTouched = { isTrackingUser = false },
-            onMapLongClick = { point ->
+            onMapLongClick = { point: GeoPoint ->
                 if (!isNavigating) {
                     isTrackingUser = false
                     calculateRouteToPoint(point)
@@ -307,7 +338,7 @@ fun MapScreen() {
             }
         )
 
-        // BOTONES FLOTANTES DE CÁMARA (VISTA GENERAL Y RECENTRAR)
+        // BOTONES FLOTANTES DE CÁMARA
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -347,6 +378,7 @@ fun MapScreen() {
             }
         }
 
+        // BOTÓN FLOTANTE SOS / MESHTATIC
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -384,6 +416,7 @@ fun MapScreen() {
             }
         }
 
+        // BANNER DE INSTRUCCIÓN AL NAVEGAR
         if (isNavigating && routeSteps.isNotEmpty() && currentStepIndex < routeSteps.size) {
             val activeStep = routeSteps[currentStepIndex]
             Card(
@@ -467,6 +500,7 @@ fun MapScreen() {
             )
         }
 
+        // PANEL INFERIOR CON DETALLES Y ACCIÓN DE EVACUACIÓN
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -594,113 +628,4 @@ fun MapScreen() {
             }
         }
     }
-}
-
-@Composable
-fun MapViewOSM(
-    latitude: Double?,
-    longitude: Double?,
-    recenterTrigger: Int,
-    overviewTrigger: Int,
-    isTrackingUser: Boolean,
-    destinationPoint: GeoPoint?,
-    routePoints: List<GeoPoint>,
-    onMapTouched: () -> Unit,
-    onMapLongClick: (GeoPoint) -> Unit
-) {
-    val context = LocalContext.current
-    val mapBundle = remember {
-        val map = object : MapView(context) {
-            override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-                if (ev.action == MotionEvent.ACTION_DOWN || ev.action == MotionEvent.ACTION_MOVE) {
-                    onMapTouched()
-                }
-                return super.dispatchTouchEvent(ev)
-            }
-        }.apply {
-            setTileSource(TileSourceFactory.MAPNIK)
-            setMultiTouchControls(true)
-            isTilesScaledToDpi = true
-            controller.setZoom(17.0)
-        }
-
-        val uMarker = Marker(map).apply {
-            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-            title = "Mi Ubicación"
-            icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_myplaces)
-        }
-        val dMarker = Marker(map).apply {
-            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-            title = "Destino Seleccionado"
-            icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_compass)
-        }
-        val polyline = Polyline(map).apply {
-            outlinePaint.strokeWidth = 14f
-            outlinePaint.color = AndroidColor.parseColor("#108981")
-        }
-
-        val eventsReceiver = object : MapEventsReceiver {
-            override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
-                onMapTouched()
-                return false
-            }
-
-            override fun longPressHelper(p: GeoPoint): Boolean {
-                onMapLongClick(p)
-                return true
-            }
-        }
-
-        val eventsOverlay = MapEventsOverlay(eventsReceiver)
-        map.overlays.add(eventsOverlay)
-        map.overlays.add(polyline)
-        map.overlays.add(uMarker)
-        map.overlays.add(dMarker)
-
-        MapBundle(map, uMarker, dMarker, polyline)
-    }
-
-    LaunchedEffect(latitude, longitude) {
-        if (latitude != null && longitude != null) {
-            val userPoint = GeoPoint(latitude, longitude)
-            mapBundle.userMarker.apply {
-                position = userPoint
-                setVisible(true)
-            }
-            if (isTrackingUser) {
-                mapBundle.mapView.controller.animateTo(userPoint)
-                mapBundle.mapView.invalidate()
-            }
-        }
-    }
-
-    LaunchedEffect(recenterTrigger) {
-        if (latitude != null && longitude != null && recenterTrigger > 0) {
-            mapBundle.mapView.controller.animateTo(GeoPoint(latitude, longitude))
-        }
-    }
-
-    LaunchedEffect(destinationPoint, routePoints) {
-        if (destinationPoint != null) {
-            mapBundle.destinationMarker.position = destinationPoint
-            mapBundle.destinationMarker.setVisible(true)
-            mapBundle.routePolyline.setPoints(routePoints)
-        } else {
-            mapBundle.destinationMarker.setVisible(false)
-            mapBundle.routePolyline.setPoints(emptyList())
-        }
-        mapBundle.mapView.invalidate()
-    }
-
-    LaunchedEffect(overviewTrigger) {
-        if (overviewTrigger > 0 && routePoints.isNotEmpty()) {
-            val boundingBox = BoundingBox.fromGeoPoints(routePoints)
-            mapBundle.mapView.zoomToBoundingBox(boundingBox, true, 120)
-        }
-    }
-
-    AndroidView(
-        factory = { mapBundle.mapView },
-        modifier = Modifier.fillMaxSize()
-    )
 }

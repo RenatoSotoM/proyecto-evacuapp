@@ -49,4 +49,8 @@ object RetrofitClient {
     val incidentApiService: IncidentApiService by lazy {
         retrofit.create(IncidentApiService::class.java)
     }
+
+    val safeZonesApi: SafeZonesApiService by lazy {
+        retrofit.create(SafeZonesApiService::class.java) // O usando la instancia de Retrofit que ya tengas creada en ese archivo
+    }
 }
