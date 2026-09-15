@@ -3,6 +3,9 @@ package com.example.proyecto_evacuapp.ui.components
 import android.annotation.SuppressLint
 import android.graphics.Color as AndroidColor
 import android.view.MotionEvent
+import android.graphics.Color
+import org.osmdroid.views.overlay.Overlay
+import org.osmdroid.views.overlay.Polygon
 import com.example.proyecto_evacuapp.R
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -283,4 +286,26 @@ private fun precargarMapaLocal(mapView: MapView, currentLat: Double, currentLng:
             android.util.Log.e("OFFLINE_MAP", "Error al iniciar caché offline: ${e.message}")
         }
     }
+}
+
+fun dibujarZonaAfectada(mapView: MapView, puntos: List<GeoPoint>) {
+    if (puntos.isEmpty()) return
+
+    // Limpiar polígonos previos especificando el tipo de parámetro en la lambda
+    mapView.overlays.removeAll { overlay: Overlay ->
+        overlay is Polygon && overlay.title == "ZONA_EMERGENCIA"
+    }
+
+    val polygonOverlay = Polygon(mapView).apply {
+        title = "ZONA_EMERGENCIA"
+        points = puntos
+
+        // En Osmdroid se estiliza mediante fillPaint y outlinePaint
+        fillPaint.color = Color.argb(60, 255, 0, 0)  // Rojo semitransparente
+        outlinePaint.color = Color.RED               // Borde rojo
+        outlinePaint.strokeWidth = 4f                // Grosor del borde
+    }
+
+    mapView.overlays.add(polygonOverlay)
+    mapView.invalidate() // Refresca la vista del mapa
 }
