@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.example.proyecto_evacuapp.data.UserSessionState
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
 import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
@@ -62,8 +63,6 @@ import java.io.File
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        getSharedPreferences("auth_prefs", Context.MODE_PRIVATE).edit().clear().apply()
 
         val database = EvacuAppDatabase.getInstance(applicationContext)
         IncidentSharedState.initialize(database)
@@ -105,9 +104,23 @@ fun EvacuAppApp() {
     val hasToken = !savedToken.isNullOrEmpty()
 
     // Sincroniza el token guardado con el interceptor de Retrofit
-    LaunchedEffect(savedToken) {
-        if (!savedToken.isNullOrEmpty()) {
-            RetrofitClient.authToken = savedToken
+    // Dentro del Composable principal en MainActivity.kt
+    LaunchedEffect(Unit) {
+        val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+        val token = prefs.getString("jwt_token", null)
+
+        if (!token.isNullOrBlank()) {
+            RetrofitClient.authToken = token
+            // Intentar obtener los datos del usuario logueado usando tu método
+            try {
+                val response = RetrofitClient.userApiService.getMe()
+                if (response.isSuccessful && response.body() != null) {
+                    UserSessionState.updateFromUserMeResponse(response.body()!!)
+                }
+            } catch (e: Exception) {
+                // Si falla la red, al menos marcarlo como logueado
+                UserSessionState.currentUser = UserSessionState.currentUser.copy(isLoggedIn = true)
+            }
         }
     }
 
@@ -128,9 +141,21 @@ fun EvacuAppApp() {
     var currentRouteDurationSeconds by remember { mutableStateOf<Double?>(null) }
 
     when (currentFlow) {
+        // En MainActivity.kt (dentro de tu cuando evalúas el flujo de pantallas / ScreenFlow)
+
         ScreenFlow.LOGIN -> LoginScreen(
-            onLoginSuccess = { currentFlow = ScreenFlow.SPLASH },
-            onNavigateToRegister = { currentFlow = ScreenFlow.REGISTER }
+            onLoginSuccess = {
+                // Redirige a las pestañas principales al iniciar sesión con éxito
+                currentFlow = ScreenFlow.MAIN_TABS
+            },
+            onContinueAsGuest = {
+                // Redirige a las pestañas principales en modo invitado
+                currentFlow = ScreenFlow.MAIN_TABS
+            },
+            onNavigateToRegister = {
+                // Si tienes una pantalla de registro separada
+                currentFlow = ScreenFlow.REGISTER
+            }
         )
         ScreenFlow.REGISTER -> RegisterScreen(
             onRegisterSuccess = { currentFlow = ScreenFlow.SPLASH },

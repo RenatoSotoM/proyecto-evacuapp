@@ -8,7 +8,6 @@ import retrofit2.http.GET
 import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
 
-
 object RetrofitClient {
 
     // 📱 Para dispositivo físico conectado a tu Wi-Fi:
@@ -60,5 +59,10 @@ object RetrofitClient {
 
     val pointsOfInterestApi: PointsOfInterestApi by lazy {
         retrofit.create(PointsOfInterestApi::class.java)
+    }
+
+    // Módulo de Emergencias Oficiales (Polígonos de zona roja)
+    val emergenciesApiService: EmergenciesApiService by lazy {
+        retrofit.create(EmergenciesApiService::class.java)
     }
 }

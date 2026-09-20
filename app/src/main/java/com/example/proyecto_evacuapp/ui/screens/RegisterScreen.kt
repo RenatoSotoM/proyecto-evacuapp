@@ -1,140 +1,165 @@
 package com.example.proyecto_evacuapp.ui.screens
 
 import android.content.Context
-import android.widget.Toast
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.proyecto_evacuapp.data.UserSessionState
 import com.example.proyecto_evacuapp.data.remote.RegisterRequest
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
+import com.example.proyecto_evacuapp.ui.theme.EvacuBlue
 import kotlinx.coroutines.launch
 
 @Composable
 fun RegisterScreen(
-    onRegisterSuccess: () -> Unit,
-    onNavigateToLogin: () -> Unit
+    onRegisterSuccess: () -> Unit = {},
+    onNavigateToLogin: () -> Unit = {}
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
-    var name by remember { mutableStateOf("") }
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
+    // 1. PASO 1: DECLARAR LA VARIABLE DE ESTADO DEL TELÉFONO
+    var nameText by remember { mutableStateOf("") }
+    var emailText by remember { mutableStateOf("") }
+    var passwordText by remember { mutableStateOf("") }
+    var phoneText by remember { mutableStateOf("") } // <- Esta variable guarda el texto del fono
+
     var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .padding(24.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Text(
             text = "Crear Cuenta",
-            style = MaterialTheme.typography.headlineMedium
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
         )
 
         Spacer(modifier = Modifier.height(24.dp))
 
         OutlinedTextField(
-            value = name,
-            onValueChange = { name = it },
-            label = { Text("Nombre completo") },
-            singleLine = true,
+            value = nameText,
+            onValueChange = { nameText = it },
+            label = { Text("Nombre Completo") },
+            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
             modifier = Modifier.fillMaxWidth()
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
         OutlinedTextField(
-            value = email,
-            onValueChange = { email = it },
-            label = { Text("Correo electrónico") },
-            singleLine = true,
+            value = emailText,
+            onValueChange = { emailText = it },
+            label = { Text("Correo Electrónico") },
+            leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 2. PASO 2: CAMPO DE TEXTO DEL TELÉFONO
+        OutlinedTextField(
+            value = phoneText,
+            onValueChange = { phoneText = it },
+            label = { Text("Teléfono (Opcional)") },
+            leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
             modifier = Modifier.fillMaxWidth()
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
         OutlinedTextField(
-            value = password,
-            onValueChange = { password = it },
+            value = passwordText,
+            onValueChange = { passwordText = it },
             label = { Text("Contraseña") },
-            singleLine = true,
+            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
             visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth()
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
-
-        OutlinedTextField(
-            value = phone,
-            onValueChange = { phone = it },
-            label = { Text("Teléfono (Opcional)") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
+        errorMessage?.let {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = it, color = MaterialTheme.colorScheme.error)
+        }
 
         Spacer(modifier = Modifier.height(24.dp))
 
         Button(
             onClick = {
-                if (name.isBlank() || email.isBlank() || password.isBlank()) {
-                    Toast.makeText(context, "Por favor completa los campos requeridos", Toast.LENGTH_SHORT).show()
-                    return@Button
-                }
-
-                isLoading = true
                 scope.launch {
+                    isLoading = true
+                    errorMessage = null
                     try {
+                        // 3. PASO 3: PASAR phoneText EN LUGAR DE phone EN LA LÍNEA 145
                         val request = RegisterRequest(
-                            name = name.trim(),
-                            email = email.trim(),
-                            password = password,
-                            phone = phone.ifBlank { null }
+                            name = nameText.trim(),
+                            email = emailText.trim(),
+                            password = passwordText,
+                            phone = phoneText.trim().ifBlank { null } // <- Usa 'phoneText' aquí
                         )
 
                         val response = RetrofitClient.authApiService.register(request)
-
                         if (response.isSuccessful && response.body() != null) {
-                            val authResponse = response.body()!!
-                            val token = authResponse.accessToken
+                            val authData = response.body()!!
+                            RetrofitClient.authToken = authData.accessToken
 
-                            // Guardar token
-                            RetrofitClient.authToken = token
-                            val sharedPref = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
-                            sharedPref.edit().putString("jwt_token", token).apply()
+                            val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+                            prefs.edit().putString("jwt_token", authData.accessToken).apply()
 
-                            Toast.makeText(context, "¡Cuenta creada exitosamente!", Toast.LENGTH_SHORT).show()
+                            UserSessionState.currentUser = UserSessionState.currentUser.copy(
+                                name = authData.user.name,
+                                email = authData.user.email,
+                                isLoggedIn = true
+                            )
+
                             onRegisterSuccess()
                         } else {
-                            Toast.makeText(context, "Error en registro (${response.code()})", Toast.LENGTH_LONG).show()
+                            errorMessage = "Error en el registro (${response.code()})"
                         }
                     } catch (e: Exception) {
-                        Toast.makeText(context, "Error de conexión: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                        errorMessage = "Error de conexión con el servidor"
                     } finally {
                         isLoading = false
                     }
                 }
             },
-            enabled = !isLoading,
-            modifier = Modifier.fillMaxWidth()
+            enabled = !isLoading && nameText.isNotBlank() && emailText.isNotBlank() && passwordText.isNotBlank(),
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = EvacuBlue)
         ) {
-            Text(if (isLoading) "Registrando..." else "Registrarse")
+            if (isLoading) {
+                CircularProgressIndicator(color = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(24.dp))
+            } else {
+                Text("REGISTRARSE")
+            }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
-
-        TextButton(
-            onClick = onNavigateToLogin,
-            enabled = !isLoading
-        ) {
+        TextButton(onClick = onNavigateToLogin) {
             Text("¿Ya tienes cuenta? Inicia sesión")
         }
     }

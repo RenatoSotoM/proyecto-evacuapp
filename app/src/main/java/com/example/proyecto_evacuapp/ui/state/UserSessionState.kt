@@ -1,9 +1,13 @@
 package com.example.proyecto_evacuapp.data
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.example.proyecto_evacuapp.data.remote.UserMeResponse
 
 object UserSessionState {
-    var currentUser: UserProfile = UserProfile()
+    // 💡 'by mutableStateOf' permite que Compose reaccione a los cambios de sesión
+    var currentUser: UserProfile by mutableStateOf(UserProfile())
 
     fun updateFromUserMeResponse(response: UserMeResponse) {
         val mp = response.mobilityProfile

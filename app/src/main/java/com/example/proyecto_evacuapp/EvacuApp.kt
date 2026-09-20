@@ -21,7 +21,11 @@ class EvacuApp : Application() {
 
         val prefs = getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
         val token = prefs.getString("jwt_token", null)
+
         if (!token.isNullOrEmpty()) {
+            // 🔑 PASO CLAVE: Asignar el token a Retrofit ANTES de cualquier llamada a la API
+            RetrofitClient.authToken = token
+
             val userId = prefs.getString("user_id", "") ?: ""
             val userName = prefs.getString("user_name", "") ?: ""
             val userEmail = prefs.getString("user_email", "") ?: ""
@@ -35,16 +39,17 @@ class EvacuApp : Application() {
                     role = userRole,
                     isLoggedIn = true
                 )
+            }
 
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        val meResponse = RetrofitClient.userApiService.getMe()
-                        if (meResponse.isSuccessful && meResponse.body() != null) {
-                            UserSessionState.updateFromUserMeResponse(meResponse.body()!!)
-                        }
-                    } catch (e: Exception) {
-                        Log.w("EvacuApp", "getMe on startup failed, using cached data", e)
+            // Petición asíncrona para actualizar los datos del usuario desde PostgreSQL al arrancar
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val meResponse = RetrofitClient.userApiService.getMe()
+                    if (meResponse.isSuccessful && meResponse.body() != null) {
+                        UserSessionState.updateFromUserMeResponse(meResponse.body()!!)
                     }
+                } catch (e: Exception) {
+                    Log.w("EvacuApp", "getMe en inicio falló, usando datos en caché local", e)
                 }
             }
         }
