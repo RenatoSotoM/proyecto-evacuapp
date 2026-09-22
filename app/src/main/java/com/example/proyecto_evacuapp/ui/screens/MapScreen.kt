@@ -31,7 +31,10 @@ import com.example.proyecto_evacuapp.data.remote.IncidentResponseDto
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.data.repository.IncidentRepository
 import com.example.proyecto_evacuapp.ui.components.ConnectivityBadge
+import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
+import com.example.proyecto_evacuapp.ui.components.IncidentStatus
 import com.example.proyecto_evacuapp.ui.components.OsrmRoutingService
+import com.example.proyecto_evacuapp.ui.components.SharedIncident
 import com.example.proyecto_evacuapp.ui.components.SosMeshtaticMenu
 import com.example.proyecto_evacuapp.ui.components.StepInstruction
 import com.example.proyecto_evacuapp.ui.components.UserLocationState
@@ -92,6 +95,7 @@ fun MapScreen() {
     val context = LocalContext.current
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
     val coroutineScope = rememberCoroutineScope()
+    val sharedIncidents = IncidentSharedState.incidents
 
     // ESTADOS DE GPS Y NAVEGACIÓN
     var isTrackingUser by remember { mutableStateOf(true) }
@@ -134,10 +138,6 @@ fun MapScreen() {
     var isNavigating by remember { mutableStateOf(false) }
     var currentStepIndex by remember { mutableIntStateOf(0) }
 
-    var remoteIncidents by remember {
-        mutableStateOf<List<IncidentResponseDto>>(emptyList())
-    }
-
     LaunchedEffect(Unit) {
         try {
             val response = IncidentRepository(
@@ -145,11 +145,12 @@ fun MapScreen() {
             ).getIncidents()
 
             if (response.isSuccessful) {
-                remoteIncidents = response.body().orEmpty()
+                val remoteList = response.body().orEmpty()
+                IncidentSharedState.syncRemoteIncidents(remoteList)
 
                 Log.d(
                     "MAP_INCIDENTS",
-                    "Incidentes cargados: ${remoteIncidents.size}"
+                    "Incidentes cargados y sincronizados: ${remoteList.size}"
                 )
             } else {
                 Log.e(
@@ -332,7 +333,7 @@ fun MapScreen() {
             isTrackingUser = isTrackingUser,
             destinationPoint = customDestination,
             routePoints = customRoutePoints,
-            incidents = remoteIncidents,
+            incidents = sharedIncidents,
             onMapTouched = { isTrackingUser = false },
             onMapLongClick = { point ->
                 if (!isNavigating) {
@@ -631,6 +632,72 @@ fun MapScreen() {
     }
 }
 
+private fun createIncidentMarkerBitmap(context: android.content.Context, incident: SharedIncident): android.graphics.drawable.Drawable {
+    val density = context.resources.displayMetrics.density
+    val widthPx = (56 * density).toInt()
+    val heightPx = (68 * density).toInt()
+
+    val bitmap = android.graphics.Bitmap.createBitmap(widthPx, heightPx, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bitmap)
+
+    val statusColorInt = when (incident.status) {
+        IncidentStatus.VERIFIED -> android.graphics.Color.parseColor("#16A34A") // SafeGreen
+        IncidentStatus.PROBABLE -> android.graphics.Color.parseColor("#F59E0B") // WarningAmber
+        IncidentStatus.LOCAL_PENDING, IncidentStatus.PENDING -> android.graphics.Color.parseColor("#2563EB") // EvacuBlue
+        IncidentStatus.REJECTED -> android.graphics.Color.parseColor("#DC2626") // DangerRed
+        else -> android.graphics.Color.parseColor("#6B7280")
+    }
+
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.FILL
+    }
+
+    val centerX = widthPx / 2f
+    val centerY = (widthPx / 2f) + (2 * density)
+    val radius = (widthPx / 2f) - (2 * density)
+
+    // Outer status ring circle
+    paint.color = statusColorInt
+    canvas.drawCircle(centerX, centerY, radius, paint)
+
+    // Inner white circle
+    paint.color = android.graphics.Color.WHITE
+    canvas.drawCircle(centerX, centerY, radius - (4 * density), paint)
+
+    // Draw Emoji icon
+    paint.textAlign = android.graphics.Paint.Align.CENTER
+    paint.textSize = 20f * density
+    val emojiText = incident.type.emoji
+    val textY = centerY - ((paint.descent() + paint.ascent()) / 2f)
+    canvas.drawText(emojiText, centerX, textY, paint)
+
+    // Draw Confidence Badge at bottom
+    val badgePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = statusColorInt
+        style = android.graphics.Paint.Style.FILL
+    }
+    val badgeTextPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        textSize = 9.5f * density
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        textAlign = android.graphics.Paint.Align.CENTER
+    }
+
+    val badgeText = "${incident.confidencePercentage}%"
+    val badgeWidth = (34 * density)
+    val badgeHeight = (15 * density)
+    val badgeRect = android.graphics.RectF(
+        centerX - (badgeWidth / 2f),
+        heightPx - badgeHeight,
+        centerX + (badgeWidth / 2f),
+        heightPx.toFloat()
+    )
+    canvas.drawRoundRect(badgeRect, 6 * density, 6 * density, badgePaint)
+    canvas.drawText(badgeText, centerX, heightPx - (2.5f * density), badgeTextPaint)
+
+    return android.graphics.drawable.BitmapDrawable(context.resources, bitmap)
+}
+
 @Composable
 fun MapViewOSM(
     latitude: Double?,
@@ -640,7 +707,7 @@ fun MapViewOSM(
     isTrackingUser: Boolean,
     destinationPoint: GeoPoint?,
     routePoints: List<GeoPoint>,
-    incidents: List<IncidentResponseDto>,
+    incidents: List<SharedIncident>,
     onMapTouched: () -> Unit,
     onMapLongClick: (GeoPoint) -> Unit
 ) {
@@ -730,9 +797,9 @@ fun MapViewOSM(
 
     LaunchedEffect(incidents) {
         val map = mapBundle.mapView
-        val currentIds = incidents.map { it.id }.toSet()
+        val currentIds = incidents.map { it.localId }.toSet()
 
-        // Elimina marcadores de registros ya inexistentes en el backend.
+        // Elimina marcadores de registros ya inexistentes
         val obsoleteIds = mapBundle.incidentMarkers.keys
             .filter { it !in currentIds }
 
@@ -743,15 +810,15 @@ fun MapViewOSM(
             mapBundle.incidentMarkers.remove(id)
         }
 
-        // Crea o actualiza marcadores de cada incidente remoto.
+        // Crea o actualiza marcadores de cada incidente.
         incidents.forEach { incident ->
-            val marker = mapBundle.incidentMarkers[incident.id]
+            val marker = mapBundle.incidentMarkers[incident.localId]
                 ?: Marker(map).also { newMarker ->
                     newMarker.setAnchor(
                         Marker.ANCHOR_CENTER,
                         Marker.ANCHOR_BOTTOM
                     )
-                    mapBundle.incidentMarkers[incident.id] = newMarker
+                    mapBundle.incidentMarkers[incident.localId] = newMarker
                     map.overlays.add(newMarker)
                 }
 
@@ -760,25 +827,26 @@ fun MapViewOSM(
                 incident.longitude
             )
 
-            marker.title = incident.type.replace("_", " ")
+            marker.icon = createIncidentMarkerBitmap(context, incident)
+
+            marker.title = "${incident.type.emoji} ${incident.type.displayName}"
 
             marker.subDescription = buildString {
-                append("Severidad: ${incident.severity}")
+                append("Confianza Beta: ${incident.confidencePercentage}% (α: ${incident.alpha.toInt()}, β: ${incident.beta.toInt()})")
                 append("\nEstado: ${incident.status}")
+                append("\nSeveridad: ${incident.severity}")
 
-                incident.description
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { description ->
-                        append("\n$description")
-                    }
+                if (incident.description.isNotBlank()) {
+                    append("\n${incident.description}")
+                }
             }
 
             marker.isEnabled = true
 
             Log.d(
                 "MAP_MARKERS",
-                "id=${incident.id}, " +
-                        "estado backend=${incident.status}, " +
+                "localId=${incident.localId}, status=${incident.status}, " +
+                        "confianza=${incident.confidencePercentage}%, " +
                         "lat=${incident.latitude}, lon=${incident.longitude}"
             )
         }
@@ -790,17 +858,6 @@ fun MapViewOSM(
             "Marcadores activos=${mapBundle.incidentMarkers.size}; " +
                     "overlays totales=${map.overlays.size}"
         )
-
-        // Centrar temporalmente para prueba
-        incidents.firstOrNull()?.let { firstIncident ->
-            map.controller.setZoom(16.0)
-            map.controller.setCenter(
-                GeoPoint(
-                    firstIncident.latitude,
-                    firstIncident.longitude
-                )
-            )
-        }
     }
 
     LaunchedEffect(overviewTrigger) {

@@ -2,14 +2,14 @@ package com.example.proyecto_evacuapp.ui.components
 
 import java.util.UUID
 
-enum class IncidentType {
-    BLOQUEO_VIAL,
-    INCENDIO,
-    INUNDACION,
-    DERRUMBE,
-    ACCIDENTE,
-    RUTA_INACCESIBLE,
-    OTRO
+enum class IncidentType(val emoji: String, val displayName: String) {
+    BLOQUEO_VIAL("🚧", "Calle bloqueada"),
+    INCENDIO("🔥", "Incendio"),
+    INUNDACION("🌊", "Inundación"),
+    DERRUMBE("⚠️", "Derrumbe"),
+    ACCIDENTE("🚗", "Accidente vehicular"),
+    RUTA_INACCESIBLE("🚫", "Ruta inaccesible"),
+    OTRO("⚠️", "Otro peligro")
 }
 
 enum class IncidentSeverity {
@@ -55,6 +55,9 @@ data class SharedIncident(
             val total = alpha + beta
             return if (total <= 0.0) 0.0 else alpha / total
         }
+
+    val confidencePercentage: Int
+        get() = (confidence * 100).toInt()
 
     val isVerified: Boolean
         get() = status == IncidentStatus.VERIFIED || confidence >= 0.75

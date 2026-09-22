@@ -2,6 +2,7 @@ package com.example.proyecto_evacuapp.ui.components
 
 import android.content.Context
 import androidx.compose.runtime.mutableStateListOf
+import com.example.proyecto_evacuapp.data.remote.IncidentResponseDto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -40,8 +41,6 @@ object IncidentSharedState {
         }
     }
 
-
-
     fun addLocalIncident(incident: SharedIncident) {
         val localIncident = incident.copy(
             status = IncidentStatus.LOCAL_PENDING,
@@ -50,6 +49,55 @@ object IncidentSharedState {
 
         replaceInMemory(localIncident)
         persist(localIncident)
+    }
+
+    fun addIncident(incident: SharedIncident) {
+        addLocalIncident(incident)
+    }
+
+    fun syncRemoteIncidents(remoteList: List<IncidentResponseDto>) {
+        remoteList.forEach { remote ->
+            val index = incidentList.indexOfFirst { it.remoteId == remote.id || it.localId == remote.id }
+            val parsedType = runCatching { IncidentType.valueOf(remote.type) }.getOrDefault(IncidentType.OTRO)
+            val parsedSeverity = runCatching { IncidentSeverity.valueOf(remote.severity) }.getOrDefault(IncidentSeverity.MEDIA)
+            val parsedStatus = remote.status.toLocalStatus()
+            val alphaVal = remote.alpha
+            val betaVal = remote.beta
+
+            if (index >= 0) {
+                val current = incidentList[index]
+                val updated = current.copy(
+                    remoteId = remote.id,
+                    type = parsedType,
+                    severity = parsedSeverity,
+                    description = remote.description ?: current.description,
+                    latitude = remote.latitude,
+                    longitude = remote.longitude,
+                    alpha = alphaVal,
+                    beta = betaVal,
+                    status = parsedStatus,
+                    updatedAtMillis = System.currentTimeMillis()
+                )
+                replaceInMemory(updated)
+                persist(updated)
+            } else {
+                val newIncident = SharedIncident(
+                    localId = remote.id,
+                    remoteId = remote.id,
+                    type = parsedType,
+                    severity = parsedSeverity,
+                    description = remote.description.orEmpty(),
+                    latitude = remote.latitude,
+                    longitude = remote.longitude,
+                    alpha = alphaVal,
+                    beta = betaVal,
+                    status = parsedStatus,
+                    isOwnReport = false
+                )
+                replaceInMemory(newIncident)
+                persist(newIncident)
+            }
+        }
     }
 
     fun markAsSynced(
@@ -63,6 +111,27 @@ object IncidentSharedState {
             val current = incidentList[index]
             val updated = current.copy(
                 remoteId = remoteId,
+                status = status.toLocalStatus(),
+                updatedAtMillis = System.currentTimeMillis()
+            )
+
+            replaceInMemory(updated)
+            persist(updated)
+        }
+    }
+
+    fun updateVoteFromRemote(
+        localId: String,
+        alpha: Double,
+        beta: Double,
+        status: String
+    ) {
+        val index = incidentList.indexOfFirst { it.localId == localId || it.remoteId == localId }
+        if (index != -1) {
+            val current = incidentList[index]
+            val updated = current.copy(
+                alpha = alpha,
+                beta = beta,
                 status = status.toLocalStatus(),
                 updatedAtMillis = System.currentTimeMillis()
             )
@@ -98,7 +167,7 @@ object IncidentSharedState {
         isConfirmation: Boolean
     ) {
         val index = incidentList.indexOfFirst {
-            it.localId == localId
+            it.localId == localId || it.remoteId == localId
         }
 
         if (index < 0) return
@@ -157,6 +226,7 @@ object IncidentSharedState {
             )
         }
     }
+
     fun triggerSync(context: Context) {
         IncidentSyncService.scheduleSync(context)
     }
@@ -185,8 +255,8 @@ private fun IncidentEntity.toSharedIncident(): SharedIncident {
     return SharedIncident(
         localId = localId,
         remoteId = remoteId,
-        type = IncidentType.valueOf(type),
-        severity = IncidentSeverity.valueOf(severity),
+        type = runCatching { IncidentType.valueOf(type) }.getOrDefault(IncidentType.OTRO),
+        severity = runCatching { IncidentSeverity.valueOf(severity) }.getOrDefault(IncidentSeverity.MEDIA),
         description = description,
         latitude = latitude,
         longitude = longitude,
@@ -194,7 +264,7 @@ private fun IncidentEntity.toSharedIncident(): SharedIncident {
         updatedAtMillis = updatedAtMillis,
         alpha = alpha,
         beta = beta,
-        status = IncidentStatus.valueOf(status),
+        status = runCatching { IncidentStatus.valueOf(status) }.getOrDefault(IncidentStatus.PENDING),
         affectedSegmentIds = affectedSegmentIds
             .split(",")
             .filter { it.isNotBlank() }

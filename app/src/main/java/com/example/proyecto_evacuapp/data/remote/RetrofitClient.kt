@@ -8,7 +8,7 @@ import java.util.concurrent.TimeUnit
 object RetrofitClient {
 
     // 📱 Para dispositivo físico conectado a tu Wi-Fi:
-    private const val BASE_URL = "http://192.168.1.8:3000/api/v1/"
+    private const val BASE_URL = "http://10.123.125.204:3000/api/v1/"
     // 💻 Para emulador de Android Studio:
     // private const val BASE_URL = "http://10.0.2.2:3000/api/v1/"
 

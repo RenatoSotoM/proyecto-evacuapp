@@ -17,8 +17,14 @@ data class IncidentResponseDto(
     @SerializedName("description") val description: String?,
     @SerializedName("latitude") val latitude: Double,
     @SerializedName("longitude") val longitude: Double,
-    @SerializedName("status") val status: String
-)
+    @SerializedName("status") val status: String,
+    @SerializedName("alpha") val alpha: Double = 1.0,
+    @SerializedName("beta") val beta: Double = 1.0,
+    @SerializedName("confidence") val confidence: Double? = null
+) {
+    val computedConfidence: Double
+        get() = confidence ?: if (alpha + beta > 0.0) alpha / (alpha + beta) else 0.5
+}
 
 data class VoteIncidentNetworkDto(
     @SerializedName("vote") val vote: String
