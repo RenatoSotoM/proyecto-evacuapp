@@ -1,5 +1,6 @@
 package com.example.proyecto_evacuapp.ui.screens
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -46,6 +47,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,11 +56,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.proyecto_evacuapp.data.remote.RetrofitClient
+import com.example.proyecto_evacuapp.data.repository.IncidentRepository
 import com.example.proyecto_evacuapp.ui.components.IncidentSeverity
 import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
 import com.example.proyecto_evacuapp.ui.components.IncidentStatus
 import com.example.proyecto_evacuapp.ui.components.IncidentType
 import com.example.proyecto_evacuapp.ui.components.SharedIncident
+import com.example.proyecto_evacuapp.ui.components.UserLocationState
 import com.example.proyecto_evacuapp.ui.theme.AppBackground
 import com.example.proyecto_evacuapp.ui.theme.DangerRed
 import com.example.proyecto_evacuapp.ui.theme.DangerRedLight
@@ -71,9 +76,11 @@ import com.example.proyecto_evacuapp.ui.theme.TextPrimary
 import com.example.proyecto_evacuapp.ui.theme.TextSecondary
 import com.example.proyecto_evacuapp.ui.theme.WarningAmber
 import com.example.proyecto_evacuapp.ui.theme.WarningAmberLight
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 private data class ReportType(
     val code: String,
@@ -85,78 +92,34 @@ private data class ReportType(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ReportsScreen() {
+    val scope = rememberCoroutineScope()
+    val repository = remember {
+        IncidentRepository(RetrofitClient.incidentApiService)
+    }
     val reportTypes = remember {
         listOf(
-            ReportType(
-                code = "BLOQUEO VIAL",
-                emoji = "🚧",
-                title = "Calle bloqueada",
-                description = "Escombros, corte de vía o paso no habilitado"
-            ),
-            ReportType(
-                code = "INCENDIO",
-                emoji = "🔥",
-                title = "Incendio",
-                description = "Fuego o propagación de humo denso"
-            ),
-            ReportType(
-                code = "INUNDACION",
-                emoji = "🌊",
-                title = "Inundación",
-                description = "Anegamiento en calzada o paso peatonal"
-            ),
-            ReportType(
-                code = "DERRUMBE",
-                emoji = "⚠️",
-                title = "Derrumbe",
-                description = "Caída de material o fallas de muro"
-            ),
-            ReportType(
-                code = "ACCIDENTE",
-                emoji = "🚗",
-                title = "Accidente vehicular",
-                description = "Vehículo obstaculizando la ruta"
-            ),
-            ReportType(
-                code = "RUTA INACCESIBLE",
-                emoji = "🚫",
-                title = "Ruta inaccesible",
-                description = "Escaleras, desnivel, vereda rota o paso sin acceso"
-            ),
-            ReportType(
-                code = "OTRO",
-                emoji = "⚠️",
-                title = "Otro peligro",
-                description = "Riesgo no clasificado en las opciones anteriores"
-            )
+            ReportType("BLOQUEO VIAL", "🚧", "Calle bloqueada", "Escombros, corte de vía o paso no habilitado"),
+            ReportType("INCENDIO", "🔥", "Incendio", "Fuego o propagación de humo denso"),
+            ReportType("INUNDACION", "🌊", "Inundación", "Anegamiento en calzada o paso peatonal"),
+            ReportType("DERRUMBE", "⚠️", "Derrumbe", "Caída de material o fallas de muro"),
+            ReportType("ACCIDENTE", "🚗", "Accidente vehicular", "Vehículo obstaculizando la ruta"),
+            ReportType("RUTA INACCESIBLE", "🚫", "Ruta inaccesible", "Escaleras, desnivel, vereda rota o paso sin acceso"),
+            ReportType("OTRO", "⚠️", "Otro peligro", "Riesgo no clasificado en las opciones anteriores")
         )
     }
 
-    val severityOptions = listOf(
-        "Baja",
-        "Media",
-        "Alta",
-        "Critica"
-    )
+    val severityOptions = listOf("Baja", "Media", "Alta", "Critica")
 
-    var selectedType by rememberSaveable {
-        mutableStateOf<ReportType?>(null)
-    }
-    var selectedSeverity by rememberSaveable {
-        mutableStateOf("Media")
-    }
-    var reportDescription by rememberSaveable {
-        mutableStateOf("")
-    }
-    var showReportForm by rememberSaveable {
-        mutableStateOf(false)
-    }
-    var savedMessage by rememberSaveable {
-        mutableStateOf<String?>(null)
-    }
+    var selectedType by rememberSaveable { mutableStateOf<ReportType?>(null) }
+    var selectedSeverity by rememberSaveable { mutableStateOf("Media") }
+    var reportDescription by rememberSaveable { mutableStateOf("") }
+    var showReportForm by rememberSaveable { mutableStateOf(false) }
+    var savedMessage by rememberSaveable { mutableStateOf<String?>(null) }
 
-    val demoLatitude = -33.4672
-    val demoLongitude = -70.6576
+    // Ubicación GPS actual o coordenadas por defecto
+    val userGeo = UserLocationState.currentLocation
+    val currentLat = userGeo?.latitude ?: -33.4672
+    val currentLon = userGeo?.longitude ?: -70.6576
 
     val reports = IncidentSharedState.incidents
 
@@ -218,8 +181,8 @@ fun ReportsScreen() {
                     onSeverityChange = { selectedSeverity = it },
                     description = reportDescription,
                     onDescriptionChange = { reportDescription = it },
-                    latitude = demoLatitude,
-                    longitude = demoLongitude,
+                    latitude = currentLat,
+                    longitude = currentLon,
                     onCancel = {
                         showReportForm = false
                         selectedType = null
@@ -227,19 +190,46 @@ fun ReportsScreen() {
                         savedMessage = null
                     },
                     onSave = {
-                        IncidentSharedState.addLocalIncident(
-                            SharedIncident(
-                                type = reportTypeToIncidentType(activeType.code),
-                                severity = severityToIncidentSeverity(selectedSeverity),
-                                description = reportDescription.trim().ifBlank {
-                                    "Sin descripción adicional."
-                                },
-                                latitude = demoLatitude,
-                                longitude = demoLongitude,
-                                status = IncidentStatus.LOCAL_PENDING,
-                                affectedSegmentIds = affectedSegmentsFor(activeType.code)
-                            )
+                        val localId = UUID.randomUUID().toString()
+                        val descText = reportDescription.trim().ifBlank { "Sin descripción adicional." }
+
+                        val newSharedIncident = SharedIncident(
+                            localId = localId,
+                            remoteId = null,
+                            type = reportTypeToIncidentType(activeType.code),
+                            severity = severityToIncidentSeverity(selectedSeverity),
+                            description = descText,
+                            latitude = currentLat,
+                            longitude = currentLon,
+                            alpha = 1.0,
+                            beta = 1.0,
+                            status = IncidentStatus.LOCAL_PENDING,
+                            affectedSegmentIds = affectedSegmentsFor(activeType.code)
                         )
+
+                        IncidentSharedState.addLocalIncident(newSharedIncident)
+
+                        scope.launch {
+                            try {
+                                val response = repository.createIncident(newSharedIncident)
+                                if (response.isSuccessful) {
+                                    val saved = response.body()
+                                    if (saved != null) {
+                                        IncidentSharedState.markAsSynced(
+                                            localId = localId,
+                                            remoteId = saved.id,
+                                            status = saved.status
+                                        )
+                                        Log.d("INCIDENT", "Sincronizado con servidor ID: ${saved.id}")
+                                    }
+                                } else {
+                                    Log.e("INCIDENT", "HTTP ${response.code()}: ${response.errorBody()?.string()}")
+                                }
+                            } catch (e: Exception) {
+                                Log.e("INCIDENT", "Error de red al sincronizar con el servidor", e)
+                            }
+                        }
+
                         savedMessage = "Reporte guardado localmente. Se sincronizará cuando exista conexión."
                         showReportForm = false
                         selectedType = null
@@ -280,13 +270,13 @@ fun ReportsScreen() {
                 modifier = Modifier.padding(vertical = 4.dp)
             )
             Text(
-                text = "Reportes locales",
+                text = "Reportes y Consenso Beta",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary
             )
             Text(
-                text = "Usa confirmar o descartar para simular el consenso Beta del incidente.",
+                text = "Confirma o descarta incidentes para actualizar el Índice de Confianza Beta (α, β).",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )
@@ -294,10 +284,64 @@ fun ReportsScreen() {
                 SharedReportCard(
                     report = report,
                     onConfirm = {
-                        IncidentSharedState.confirmIncident(report.localId)
+                        val targetId = report.localId
+                        val remoteId = report.remoteId
+
+                        IncidentSharedState.confirmIncident(targetId)
+
+                        if (remoteId != null) {
+                            scope.launch {
+                                try {
+                                    val response = repository.voteIncident(
+                                        remoteId = remoteId,
+                                        vote = "CONFIRM"
+                                    )
+                                    if (response.isSuccessful) {
+                                        val updated = response.body()
+                                        if (updated != null) {
+                                            IncidentSharedState.updateVoteFromRemote(
+                                                localId = targetId,
+                                                alpha = updated.alpha ?: 1.0,
+                                                beta = updated.beta ?: 1.0,
+                                                status = updated.status
+                                            )
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("VOTE", "Error enviando voto remoto", e)
+                                }
+                            }
+                        }
                     },
                     onReject = {
-                        IncidentSharedState.rejectIncident(report.localId)
+                        val targetId = report.localId
+                        val remoteId = report.remoteId
+
+                        IncidentSharedState.rejectIncident(targetId)
+
+                        if (remoteId != null) {
+                            scope.launch {
+                                try {
+                                    val response = repository.voteIncident(
+                                        remoteId = remoteId,
+                                        vote = "REJECT"
+                                    )
+                                    if (response.isSuccessful) {
+                                        val updated = response.body()
+                                        if (updated != null) {
+                                            IncidentSharedState.updateVoteFromRemote(
+                                                localId = targetId,
+                                                alpha = updated.alpha ?: 1.0,
+                                                beta = updated.beta ?: 1.0,
+                                                status = updated.status
+                                            )
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("VOTE", "Error enviando voto remoto", e)
+                                }
+                            }
+                        }
                     }
                 )
             }
@@ -323,47 +367,24 @@ private fun ReportFormCard(
 ) {
     Card(
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = SurfaceWhite
-        ),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = 2.dp
-        ),
+        colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = type.emoji,
-                    style = MaterialTheme.typography.headlineMedium
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = type.emoji, style = MaterialTheme.typography.headlineMedium)
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
-                    Text(
-                        text = type.title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
-                    )
-                    Text(
-                        text = type.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
-                    )
+                    Text(text = type.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = TextPrimary)
+                    Text(text = type.description, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                 }
             }
 
-            Text(
-                text = "Nivel de severidad",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = TextPrimary
-            )
+            Text(text = "Nivel de severidad", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = TextPrimary)
 
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -372,12 +393,8 @@ private fun ReportFormCard(
                 severityOptions.forEach { severity ->
                     FilterChip(
                         selected = selectedSeverity == severity,
-                        onClick = {
-                            onSeverityChange(severity)
-                        },
-                        label = {
-                            Text(text = severity)
-                        },
+                        onClick = { onSeverityChange(severity) },
+                        label = { Text(text = severity) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = severityColor(severity),
                             selectedLabelColor = Color.White
@@ -390,12 +407,8 @@ private fun ReportFormCard(
                 value = description,
                 onValueChange = onDescriptionChange,
                 modifier = Modifier.fillMaxWidth(),
-                label = {
-                    Text("Descripción")
-                },
-                placeholder = {
-                    Text("Ej.: Árbol caído bloquea ambas pistas.")
-                },
+                label = { Text("Descripción") },
+                placeholder = { Text("Ej.: Árbol caído bloquea ambas pistas.") },
                 minLines = 3,
                 maxLines = 5,
                 shape = RoundedCornerShape(14.dp),
@@ -415,69 +428,33 @@ private fun ReportFormCard(
                     modifier = Modifier.padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.AddLocationAlt,
-                        contentDescription = null,
-                        tint = EvacuBlue
-                    )
+                    Icon(imageVector = Icons.Default.AddLocationAlt, contentDescription = null, tint = EvacuBlue)
                     Spacer(modifier = Modifier.width(8.dp))
                     Column {
-                        Text(
-                            text = "Ubicación del reporte",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = TextPrimary
-                        )
-                        Text(
-                            text = "Lat ${"%.5f".format(latitude)}, Lon ${"%.5f".format(longitude)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary
-                        )
+                        Text(text = "Ubicación del reporte", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
+                        Text(text = "Lat ${"%.5f".format(latitude)}, Lon ${"%.5f".format(longitude)}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                     }
                 }
             }
 
             Button(
                 onClick = onSave,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
+                modifier = Modifier.fillMaxWidth().height(52.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = DangerRed,
-                    contentColor = Color.White
-                )
+                colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = Color.White)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Warning,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
+                Icon(imageVector = Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "GUARDAR REPORTE",
-                    fontWeight = FontWeight.Bold
-                )
+                Text(text = "GUARDAR REPORTE", fontWeight = FontWeight.Bold)
             }
-
-            Text(
-                text = "El reporte se guarda localmente primero; no se pierde si no hay conexión.",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary
-            )
 
             Text(
                 text = "Cancelar",
                 modifier = Modifier
                     .align(Alignment.CenterHorizontally)
                     .clip(RoundedCornerShape(10.dp))
-                    .clickable {
-                        onCancel()
-                    }
-                    .padding(
-                        horizontal = 14.dp,
-                        vertical = 8.dp
-                    ),
+                    .clickable { onCancel() }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.labelLarge,
                 color = EvacuBlue,
                 fontWeight = FontWeight.Bold
@@ -487,14 +464,10 @@ private fun ReportFormCard(
 }
 
 @Composable
-private fun OfflineReportInfoCard(
-    pendingCount: Int
-) {
+private fun OfflineReportInfoCard(pendingCount: Int) {
     Card(
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = WarningAmberLight
-        ),
+        colors = CardDefaults.cardColors(containerColor = WarningAmberLight),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -506,33 +479,16 @@ private fun OfflineReportInfoCard(
                 shape = CircleShape,
                 modifier = Modifier.size(38.dp)
             ) {
-                Box(
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CloudOff,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(imageVector = Icons.Default.CloudOff, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
                 }
             }
             Spacer(modifier = Modifier.width(12.dp))
-            Column(
-                modifier = Modifier.weight(1f)
-            ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = "Modo Offline-First", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = TextPrimary)
                 Text(
-                    text = "Modo Offline-First",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = TextPrimary
-                )
-                Text(
-                    text = if (pendingCount == 0) {
-                        "Los reportes se guardarán localmente y se sincronizarán al recuperar conexión."
-                    } else {
-                        "$pendingCount reporte(s) pendiente(s) de sincronización."
-                    },
+                    text = if (pendingCount == 0) "Los reportes se guardarán localmente y se sincronizarán al recuperar conexión."
+                    else "$pendingCount reporte(s) pendiente(s) de sincronización.",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary
                 )
@@ -558,33 +514,22 @@ private fun SharedReportCard(
 
     val statusColor = when (report.status) {
         IncidentStatus.VERIFIED -> SafeGreen
-        IncidentStatus.PROBABLE -> WarningAmber
-        IncidentStatus.LOCAL_PENDING,
-        IncidentStatus.PENDING -> WarningAmber
-        IncidentStatus.REJECTED,
-        IncidentStatus.SYNC_FAILED -> DangerRed
+        IncidentStatus.PROBABLE, IncidentStatus.LOCAL_PENDING, IncidentStatus.PENDING -> WarningAmber
+        else -> DangerRed
     }
 
     val statusBackground = when (report.status) {
         IncidentStatus.VERIFIED -> SafeGreenLight
-        IncidentStatus.PROBABLE -> WarningAmberLight
-        IncidentStatus.LOCAL_PENDING,
-        IncidentStatus.PENDING -> WarningAmberLight
-        IncidentStatus.REJECTED,
-        IncidentStatus.SYNC_FAILED -> DangerRedLight
+        IncidentStatus.PROBABLE, IncidentStatus.LOCAL_PENDING, IncidentStatus.PENDING -> WarningAmberLight
+        else -> DangerRedLight
     }
 
     val severityText = incidentSeverityLabel(report.severity)
-    val severityColor = severityColor(severityText)
 
     Card(
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = SurfaceWhite
-        ),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = 2.dp
-        ),
+        colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -595,71 +540,31 @@ private fun SharedReportCard(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = incidentEmoji(report.type),
-                    style = MaterialTheme.typography.headlineSmall
-                )
+                Text(text = report.type.emoji, style = MaterialTheme.typography.headlineSmall)
                 Spacer(modifier = Modifier.width(8.dp))
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = incidentTitle(report.type),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
-                    )
-                    Text(
-                        text = formatReportDate(report.createdAtMillis),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
-                    )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = report.type.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
+                    Text(text = formatReportDate(report.createdAtMillis), style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                 }
-                Surface(
-                    color = statusBackground,
-                    shape = RoundedCornerShape(50)
-                ) {
-                    Text(
-                        text = statusText,
-                        modifier = Modifier.padding(
-                            horizontal = 8.dp,
-                            vertical = 3.dp
-                        ),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = statusColor,
-                        fontWeight = FontWeight.Bold
-                    )
+                Surface(color = statusBackground, shape = RoundedCornerShape(50)) {
+                    Text(text = statusText, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall, color = statusColor, fontWeight = FontWeight.Bold)
                 }
             }
 
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Surface(
-                    color = severityColor.copy(alpha = 0.16f),
-                    shape = RoundedCornerShape(50)
-                ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(color = severityColor(severityText).copy(alpha = 0.16f), shape = RoundedCornerShape(50)) {
                     Text(
                         text = "Severidad: $severityText",
-                        modifier = Modifier.padding(
-                            horizontal = 8.dp,
-                            vertical = 3.dp
-                        ),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                         style = MaterialTheme.typography.labelSmall,
-                        color = severityColor,
+                        color = severityColor(severityText),
                         fontWeight = FontWeight.Bold
                     )
                 }
-                Surface(
-                    color = EvacuBlueLight,
-                    shape = RoundedCornerShape(50)
-                ) {
+                Surface(color = EvacuBlueLight, shape = RoundedCornerShape(50)) {
                     Text(
-                        text = "Confianza: ${(report.confidence * 100).toInt()}%",
-                        modifier = Modifier.padding(
-                            horizontal = 8.dp,
-                            vertical = 3.dp
-                        ),
+                        text = "Confianza Beta: ${report.confidencePercentage}% (α:${report.alpha.toInt()}, β:${report.beta.toInt()})",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                         style = MaterialTheme.typography.labelSmall,
                         color = EvacuBlue,
                         fontWeight = FontWeight.Bold
@@ -667,20 +572,10 @@ private fun SharedReportCard(
                 }
             }
 
-            Text(
-                text = report.description,
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextPrimary
-            )
+            Text(text = report.description, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
 
             Text(
                 text = "Ubicación: ${"%.5f".format(report.latitude)}, ${"%.5f".format(report.longitude)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary
-            )
-
-            Text(
-                text = "Consenso Beta: α = ${report.alpha.toInt()}, β = ${report.beta.toInt()}. Umbral de verificación: 75%.",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )
@@ -690,31 +585,13 @@ private fun SharedReportCard(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "¿Confirmas este hecho?",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary
-                )
+                Text(text = "¿Confirmas este hecho?", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                 Spacer(modifier = Modifier.width(4.dp))
-                IconButton(
-                    onClick = onConfirm,
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ThumbUp,
-                        contentDescription = "Confirmar incidente",
-                        tint = SafeGreen
-                    )
+                IconButton(onClick = onConfirm, modifier = Modifier.size(32.dp)) {
+                    Icon(imageVector = Icons.Default.ThumbUp, contentDescription = "Confirmar", tint = SafeGreen)
                 }
-                IconButton(
-                    onClick = onReject,
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ThumbDown,
-                        contentDescription = "Descartar incidente",
-                        tint = DangerRed
-                    )
+                IconButton(onClick = onReject, modifier = Modifier.size(32.dp)) {
+                    Icon(imageVector = Icons.Default.ThumbDown, contentDescription = "Descartar", tint = DangerRed)
                 }
             }
         }
@@ -722,55 +599,21 @@ private fun SharedReportCard(
 }
 
 @Composable
-private fun ReportOptionItem(
-    icon: String,
-    title: String,
-    description: String,
-    onClick: () -> Unit
-) {
+private fun ReportOptionItem(icon: String, title: String, description: String, onClick: () -> Unit) {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable {
-                onClick()
-            },
+        modifier = Modifier.fillMaxWidth().clickable { onClick() },
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = SurfaceWhite
-        ),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = 1.dp
-        )
+        colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = icon,
-                style = MaterialTheme.typography.headlineMedium
-            )
+        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(text = icon, style = MaterialTheme.typography.headlineMedium)
             Spacer(modifier = Modifier.width(16.dp))
-            Column(
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = TextPrimary
-                )
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary
-                )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
+                Text(text = description, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
             }
-            Icon(
-                imageVector = Icons.Default.ArrowForward,
-                contentDescription = "Crear reporte de $title",
-                tint = EvacuBlue
-            )
+            Icon(imageVector = Icons.Default.ArrowForward, contentDescription = null, tint = EvacuBlue)
         }
     }
 }
@@ -826,33 +669,6 @@ private fun affectedSegmentsFor(typeCode: String): Set<String> {
     }
 }
 
-private fun incidentEmoji(type: IncidentType): String {
-    return when (type) {
-        IncidentType.BLOQUEO_VIAL -> "🚧"
-        IncidentType.INCENDIO -> "🔥"
-        IncidentType.INUNDACION -> "🌊"
-        IncidentType.DERRUMBE -> "⚠️"
-        IncidentType.ACCIDENTE -> "🚗"
-        IncidentType.RUTA_INACCESIBLE -> "🚫"
-        IncidentType.OTRO -> "⚠️"
-    }
-}
-
-private fun incidentTitle(type: IncidentType): String {
-    return when (type) {
-        IncidentType.BLOQUEO_VIAL -> "Calle bloqueada"
-        IncidentType.INCENDIO -> "Incendio"
-        IncidentType.INUNDACION -> "Inundación"
-        IncidentType.DERRUMBE -> "Derrumbe"
-        IncidentType.ACCIDENTE -> "Accidente vehicular"
-        IncidentType.RUTA_INACCESIBLE -> "Ruta inaccesible"
-        IncidentType.OTRO -> "Otro peligro"
-    }
-}
-
 private fun formatReportDate(millis: Long): String {
-    return SimpleDateFormat(
-        "dd/MM/yyyy HH:mm",
-        Locale.getDefault()
-    ).format(Date(millis))
+    return SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date(millis))
 }

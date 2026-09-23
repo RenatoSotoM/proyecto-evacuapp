@@ -32,8 +32,8 @@ object IncidentNotificationManager {
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_error)
-            .setContentTitle("⚠️ Peligro a menos de 5 km: ${incident.type}")
-            .setContentText("${incident.description} (Severidad: ${incident.severity})")
+            .setContentTitle("⚠️ Peligro a menos de 5 km: ${incident.title}")
+            .setContentText("${incident.description} (Severidad: ${incident.severityLevel})")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
 

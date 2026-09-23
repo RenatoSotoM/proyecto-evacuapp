@@ -1,5 +1,6 @@
 package com.example.proyecto_evacuapp
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,6 +20,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -30,6 +32,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.example.proyecto_evacuapp.data.UserSessionState
+import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
 import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
 import com.example.proyecto_evacuapp.ui.screens.ActiveNavigationScreen
@@ -37,9 +41,11 @@ import com.example.proyecto_evacuapp.ui.screens.AlertsScreen
 import com.example.proyecto_evacuapp.ui.screens.EmergencyActiveScreen
 import com.example.proyecto_evacuapp.ui.screens.EmergencyTypeSelectScreen
 import com.example.proyecto_evacuapp.ui.screens.InitialSetupScreen
+import com.example.proyecto_evacuapp.ui.screens.LoginScreen
 import com.example.proyecto_evacuapp.ui.screens.MapScreen
 import com.example.proyecto_evacuapp.ui.screens.OnboardingScreen
 import com.example.proyecto_evacuapp.ui.screens.ProfileScreen
+import com.example.proyecto_evacuapp.ui.screens.RegisterScreen
 import com.example.proyecto_evacuapp.ui.screens.ReportsScreen
 import com.example.proyecto_evacuapp.ui.screens.SplashScreen
 import com.example.proyecto_evacuapp.ui.screens.StandardNavigationScreen
@@ -76,6 +82,8 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class ScreenFlow {
+    LOGIN,
+    REGISTER,
     SPLASH,
     ONBOARDING,
     INITIAL_SETUP,
@@ -88,7 +96,39 @@ private enum class ScreenFlow {
 
 @Composable
 fun EvacuAppApp() {
-    var currentFlow by remember { mutableStateOf(ScreenFlow.SPLASH) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // Verificamos si el token ya existe en SharedPreferences
+    val sharedPreferences = remember { context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE) }
+    val savedToken = remember { sharedPreferences.getString("jwt_token", null) }
+    val hasToken = !savedToken.isNullOrEmpty()
+
+    // Sincroniza el token guardado con el interceptor de Retrofit
+    // Dentro del Composable principal en MainActivity.kt
+    LaunchedEffect(Unit) {
+        val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+        val token = prefs.getString("jwt_token", null)
+
+        if (!token.isNullOrBlank()) {
+            RetrofitClient.authToken = token
+            // Intentar obtener los datos del usuario logueado usando tu método
+            try {
+                val response = RetrofitClient.userApiService.getMe()
+                if (response.isSuccessful && response.body() != null) {
+                    UserSessionState.updateFromUserMeResponse(response.body()!!)
+                }
+            } catch (e: Exception) {
+                // Si falla la red, al menos marcarlo como logueado
+                UserSessionState.currentUser = UserSessionState.currentUser.copy(isLoggedIn = true)
+            }
+        }
+    }
+
+    // Si ya hay token, arrancamos en SPLASH; si no, vamos directo al LOGIN
+    var currentFlow by remember {
+        mutableStateOf(if (hasToken) ScreenFlow.SPLASH else ScreenFlow.LOGIN)
+    }
+
     var selectedEmergency by remember { mutableStateOf("Terremoto") }
 
     var selectedDestinationName by remember { mutableStateOf("Zona Segura") }
@@ -101,6 +141,26 @@ fun EvacuAppApp() {
     var currentRouteDurationSeconds by remember { mutableStateOf<Double?>(null) }
 
     when (currentFlow) {
+        // En MainActivity.kt (dentro de tu cuando evalúas el flujo de pantallas / ScreenFlow)
+
+        ScreenFlow.LOGIN -> LoginScreen(
+            onLoginSuccess = {
+                // Redirige a las pestañas principales al iniciar sesión con éxito
+                currentFlow = ScreenFlow.MAIN_TABS
+            },
+            onContinueAsGuest = {
+                // Redirige a las pestañas principales en modo invitado
+                currentFlow = ScreenFlow.MAIN_TABS
+            },
+            onNavigateToRegister = {
+                // Si tienes una pantalla de registro separada
+                currentFlow = ScreenFlow.REGISTER
+            }
+        )
+        ScreenFlow.REGISTER -> RegisterScreen(
+            onRegisterSuccess = { currentFlow = ScreenFlow.SPLASH },
+            onNavigateToLogin = { currentFlow = ScreenFlow.LOGIN }
+        )
         ScreenFlow.SPLASH -> SplashScreen(onContinue = { currentFlow = ScreenFlow.ONBOARDING })
         ScreenFlow.ONBOARDING -> OnboardingScreen(onFinish = { currentFlow = ScreenFlow.INITIAL_SETUP })
         ScreenFlow.INITIAL_SETUP -> InitialSetupScreen(
@@ -225,9 +285,8 @@ fun MainTabsContainer(
                 3 -> ProfileScreen()
             }
         }
-        }
     }
-
+}
 
 @Preview(showBackground = true, showSystemUi = true)
 @Composable

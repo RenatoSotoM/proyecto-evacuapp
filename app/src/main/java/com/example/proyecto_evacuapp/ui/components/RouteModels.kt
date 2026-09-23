@@ -1,9 +1,14 @@
 package com.example.proyecto_evacuapp.ui.components
 
+import org.osmdroid.util.GeoPoint
+
 data class RouteCoordinate(
     val latitude: Double,
     val longitude: Double
 )
+
+fun RouteCoordinate.toGeoPoint(): GeoPoint = GeoPoint(latitude, longitude)
+fun GeoPoint.toRouteCoordinate(): RouteCoordinate = RouteCoordinate(latitude, longitude)
 
 enum class RouteMobilityProfile {
     VEHICLE,
@@ -21,12 +26,28 @@ enum class RouteMobilityProfile {
     }
 }
 
+/**
+ * Variante de ruta calculada por LocalRouteEngine.calculateRouteAlternatives.
+ * PRINCIPAL: menor costo general. SEGURA: evita tramos con riesgo VERIFIED/PROBABLE.
+ * ACCESIBLE: minimiza la penalización de accesibilidad para perfiles vulnerables.
+ */
+enum class RouteVariant {
+    PRINCIPAL,
+    SEGURA,
+    ACCESIBLE
+}
+
 data class LocalRouteResult(
     val points: List<RouteCoordinate>,
     val distanceMeters: Double,
     val durationSeconds: Double,
     val engineName: String,
-    val warnings: List<String> = emptyList()
+    val warnings: List<String> = emptyList(),
+    // Campos nuevos con default: no rompen construcciones existentes de LocalRouteResult.
+    val variant: RouteVariant = RouteVariant.PRINCIPAL,
+    val label: String = "Ruta",
+    val avoidsVerifiedRisk: Boolean = true,
+    val maxAccessibilityPenaltyOnPath: Double = 0.0
 )
 
 data class LocalIncident(

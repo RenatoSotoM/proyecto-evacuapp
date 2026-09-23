@@ -2,21 +2,51 @@ package com.example.proyecto_evacuapp.ui.components
 
 import java.util.UUID
 
-enum class IncidentType {
-    BLOQUEO_VIAL,
-    INCENDIO,
-    INUNDACION,
-    DERRUMBE,
-    ACCIDENTE,
-    RUTA_INACCESIBLE,
-    OTRO
+enum class IncidentType(val emoji: String, val displayName: String, val apiValue: String) {
+    BLOQUEO_VIAL("🚧", "Calle bloqueada", "BLOQUEO_VIAL"),
+    INCENDIO("🔥", "Incendio", "INCENDIO"),
+    INUNDACION("🌊", "Inundación", "INUNDACION"),
+    DERRUMBE("⚠️", "Derrumbe", "ESCOMBROS"),
+    ACCIDENTE("🚗", "Accidente vehicular", "ACCIDENTE"),
+    RUTA_INACCESIBLE("🚫", "Ruta inaccesible", "RUTA_INACCESIBLE"),
+    OTRO("⚠️", "Otro peligro", "PELIGRO_GENERAL");
+
+    companion object {
+        fun fromApiValue(value: String?): IncidentType {
+            if (value.isNullOrBlank()) return OTRO
+            return entries.find {
+                it.apiValue.equals(value, ignoreCase = true) ||
+                it.name.equals(value, ignoreCase = true)
+            } ?: when (value.uppercase()) {
+                "ESCOMBROS" -> DERRUMBE
+                "PELIGRO_GENERAL" -> OTRO
+                else -> OTRO
+            }
+        }
+    }
 }
 
-enum class IncidentSeverity {
-    BAJA,
-    MEDIA,
-    ALTA,
-    CRITICA
+enum class IncidentSeverity(val apiValue: String) {
+    BAJA("LOW"),
+    MEDIA("MEDIUM"),
+    ALTA("HIGH"),
+    CRITICA("CRITICAL");
+
+    companion object {
+        fun fromApiValue(value: String?): IncidentSeverity {
+            if (value.isNullOrBlank()) return MEDIA
+            return entries.find {
+                it.apiValue.equals(value, ignoreCase = true) ||
+                it.name.equals(value, ignoreCase = true)
+            } ?: when (value.uppercase()) {
+                "LOW" -> BAJA
+                "MEDIUM" -> MEDIA
+                "HIGH" -> ALTA
+                "CRITICAL" -> CRITICA
+                else -> MEDIA
+            }
+        }
+    }
 }
 
 enum class IncidentStatus {
@@ -55,6 +85,9 @@ data class SharedIncident(
             val total = alpha + beta
             return if (total <= 0.0) 0.0 else alpha / total
         }
+
+    val confidencePercentage: Int
+        get() = (confidence * 100).toInt()
 
     val isVerified: Boolean
         get() = status == IncidentStatus.VERIFIED || confidence >= 0.75
