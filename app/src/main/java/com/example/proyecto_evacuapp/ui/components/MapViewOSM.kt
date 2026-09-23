@@ -55,11 +55,14 @@ fun MapViewOSM(
     overviewTrigger: Int = 0,
     destinationPoint: GeoPoint? = null,
     routePoints: List<GeoPoint> = emptyList(),
+    routeAlternatives: List<LocalRouteResult> = emptyList(),
+    selectedRouteVariant: LocalRouteResult? = null,
     incidents: List<SharedIncident> = emptyList(),
     safeZones: List<SafeZoneNearbyDto> = emptyList(),
     pointsOfInterest: List<PointOfInterestResponse> = emptyList(),
     onPoiSelected: (PointOfInterestResponse) -> Unit = {},
     onSafeZoneSelected: (GeoPoint, String) -> Unit = { _, _ -> },
+    onRouteVariantSelected: (LocalRouteResult) -> Unit = {},
     onMapTouched: () -> Unit = {},
     onMapLongClick: (GeoPoint) -> Unit = {}
 ) {
@@ -122,7 +125,14 @@ fun MapViewOSM(
         }
     }
 
-    // Polilínea para trazar la ruta
+    // Capa independiente para pintar la polilínea principal y las alternativas de ruta
+    val routePolylinesOverlay = remember(mapView) {
+        FolderOverlay().also {
+            mapView.overlays.add(it)
+        }
+    }
+
+    // Polilínea para trazar la ruta principal cuando no hay variantes
     val routePolyline = remember(mapView) {
         Polyline(mapView).apply {
             outlinePaint.strokeWidth = 14f
@@ -256,15 +266,30 @@ fun MapViewOSM(
         mapView.invalidate()
     }
 
-    // Actualizar Ruta y Destino
-    LaunchedEffect(destinationPoint, routePoints) {
+    // Actualizar Rutas (Principal y Alternativas) y Destino
+    LaunchedEffect(destinationPoint, routePoints, routeAlternatives, selectedRouteVariant) {
+        routePolylinesOverlay.items.clear()
+
+        if (routeAlternatives.isNotEmpty()) {
+            routePolyline.setVisible(false)
+            val polylines = RoutePolylineFactory.buildPolylines(
+                routes = routeAlternatives,
+                selectedRoute = selectedRouteVariant,
+                onAlternateClicked = onRouteVariantSelected
+            )
+            polylines.forEach { routePolylinesOverlay.add(it) }
+        } else if (routePoints.isNotEmpty()) {
+            routePolyline.setPoints(routePoints)
+            routePolyline.setVisible(true)
+        } else {
+            routePolyline.setVisible(false)
+        }
+
         if (destinationPoint != null) {
             destinationMarker.position = destinationPoint
             destinationMarker.setVisible(true)
-            routePolyline.setPoints(routePoints)
         } else {
             destinationMarker.setVisible(false)
-            routePolyline.setPoints(emptyList())
         }
         mapView.invalidate()
     }

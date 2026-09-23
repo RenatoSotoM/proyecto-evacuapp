@@ -28,14 +28,8 @@ import com.example.proyecto_evacuapp.data.remote.PointOfInterestResponse
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.data.remote.SafeZoneNearbyDto
 import com.example.proyecto_evacuapp.data.repository.IncidentRepository
-import com.example.proyecto_evacuapp.ui.components.ConnectivityBadge
-import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
-import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
-import com.example.proyecto_evacuapp.ui.components.MapViewOSM
-import com.example.proyecto_evacuapp.ui.components.OsrmRoutingService
-import com.example.proyecto_evacuapp.ui.components.SosMeshtaticMenu
-import com.example.proyecto_evacuapp.ui.components.StepInstruction
-import com.example.proyecto_evacuapp.ui.components.UserLocationState
+import com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine
+import com.example.proyecto_evacuapp.ui.components.*
 import com.example.proyecto_evacuapp.ui.theme.*
 import com.example.proyecto_evacuapp.utils.CustomVoicePlayer
 import com.example.proyecto_evacuapp.utils.MeshtaticSender
@@ -44,6 +38,7 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.osmdroid.util.GeoPoint
 
@@ -73,6 +68,34 @@ private fun formatDuration(meters: Double, speedMetersPerSecond: Double): String
     }
 }
 
+private fun findBlockingIncidentOnRoute(
+    routePoints: List<GeoPoint>,
+    incidents: List<SharedIncident>,
+    maxDistanceMeters: Double = 40.0
+): SharedIncident? {
+    if (routePoints.isEmpty() || incidents.isEmpty()) return null
+
+    val blockingIncidents = incidents.filter {
+        (it.status == IncidentStatus.VERIFIED || it.status == IncidentStatus.PROBABLE) &&
+                (it.type == IncidentType.BLOQUEO_VIAL ||
+                        it.type == IncidentType.INCENDIO ||
+                        it.type == IncidentType.INUNDACION ||
+                        it.type == IncidentType.DERRUMBE ||
+                        it.type == IncidentType.ACCIDENTE ||
+                        it.type == IncidentType.RUTA_INACCESIBLE)
+    }
+
+    for (incident in blockingIncidents) {
+        val incidentPoint = GeoPoint(incident.latitude, incident.longitude)
+        for (point in routePoints) {
+            if (point.distanceToAsDouble(incidentPoint) <= maxDistanceMeters) {
+                return incident
+            }
+        }
+    }
+    return null
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("MissingPermission")
 @Composable
@@ -92,6 +115,9 @@ fun MapScreen() {
     var recenterTrigger by remember { mutableIntStateOf(0) }
     var overviewTrigger by remember { mutableIntStateOf(0) }
 
+    // Punto de origen donde se realizó el último cálculo de ruta (para re-routing dinámico > 25m)
+    var lastRouteCalcPoint by remember { mutableStateOf<GeoPoint?>(null) }
+
     // ESTADO DE ZONAS SEGURAS Y PUNTOS DE INTERÉS
     var safeZones by remember { mutableStateOf<List<SafeZoneNearbyDto>>(emptyList()) }
     var pointsOfInterest by remember { mutableStateOf<List<PointOfInterestResponse>>(emptyList()) }
@@ -105,10 +131,12 @@ fun MapScreen() {
         )
     }
 
-    // ESTADOS PARA RUTA Y NAVEGACIÓN ACTIVA
+    // ESTADOS PARA RUTA, VARIANTES Y NAVEGACIÓN ACTIVA
     var customDestination by remember { mutableStateOf<GeoPoint?>(null) }
     var customDestinationName by remember { mutableStateOf("") }
     var customRoutePoints by remember { mutableStateOf<List<GeoPoint>>(emptyList()) }
+    var routeAlternatives by remember { mutableStateOf<List<LocalRouteResult>>(emptyList()) }
+    var selectedRouteVariant by remember { mutableStateOf<LocalRouteResult?>(null) }
     var customDistanceText by remember { mutableStateOf("") }
     var customDurationText by remember { mutableStateOf("") }
     var routeSteps by remember { mutableStateOf<List<StepInstruction>>(emptyList()) }
@@ -150,7 +178,33 @@ fun MapScreen() {
         }
     }
 
-    // Cargar zonas seguras cercanas desde la API (30 km de radio)
+    // ZONAS SEGURAS EN SEGUNDO PLANO Y PERSISTENCIA LOCAL EN ROOM
+    // 1. Carga inmediata desde la base de datos local Room
+    LaunchedEffect(Unit) {
+        try {
+            val database = EvacuAppDatabase.getInstance(context)
+            val localZones = database.safeZoneDao().getAllSafeZones()
+            if (localZones.isNotEmpty()) {
+                safeZones = localZones.map { entity ->
+                    SafeZoneNearbyDto(
+                        id = entity.id.toString(),
+                        name = entity.name,
+                        description = entity.description,
+                        capacity = entity.capacity,
+                        active = true,
+                        latitude = entity.latitude,
+                        longitude = entity.longitude,
+                        distance_meters = null
+                    )
+                }
+                Log.d("SAFE_ZONES", "Zonas seguras cargadas de Room local: ${safeZones.size}")
+            }
+        } catch (e: Exception) {
+            Log.e("SAFE_ZONES", "Error al leer zonas seguras desde Room: ${e.message}")
+        }
+    }
+
+    // 2. Consulta a la API en segundo plano con persistencia a Room DB
     LaunchedEffect(currentLatitude, currentLongitude) {
         val lat = currentLatitude
         val lng = currentLongitude
@@ -158,13 +212,28 @@ fun MapScreen() {
             try {
                 val response = RetrofitClient.safeZonesApi.getNearbySafeZones(lat, lng, 30000.0)
                 if (response.isSuccessful) {
-                    safeZones = response.body() ?: emptyList()
-                    Log.d("SAFE_ZONES", "Zonas seguras cargadas: ${safeZones.size}")
-                } else {
-                    Log.e("SAFE_ZONES", "Error API: ${response.code()}")
+                    val apiList = response.body().orEmpty()
+                    if (apiList.isNotEmpty()) {
+                        safeZones = apiList
+                        Log.d("SAFE_ZONES", "Zonas seguras actualizadas de API: ${safeZones.size}")
+
+                        coroutineScope.launch(Dispatchers.IO) {
+                            val database = EvacuAppDatabase.getInstance(context)
+                            val entities = apiList.map { dto ->
+                                SafeZoneEntity(
+                                    name = dto.name,
+                                    description = dto.description ?: "Zona segura",
+                                    capacity = dto.capacity ?: 0,
+                                    latitude = dto.latitude,
+                                    longitude = dto.longitude
+                                )
+                            }
+                            database.safeZoneDao().insertAll(entities)
+                        }
+                    }
                 }
             } catch (e: Exception) {
-                Log.e("SAFE_ZONES", "Error de red al obtener zonas seguras: ${e.message}")
+                Log.e("SAFE_ZONES", "Sin red para zonas seguras. Mantiene Room: ${e.message}")
             }
         }
     }
@@ -184,68 +253,114 @@ fun MapScreen() {
     fun calculateRouteToPoint(
         targetPoint: GeoPoint,
         targetName: String = "",
-        automatic: Boolean = false
+        automatic: Boolean = false,
+        isRerouting: Boolean = false
     ) {
         val startLat = currentLatitude
         val startLon = currentLongitude
         if (startLat == null || startLon == null) {
-            Toast.makeText(context, "Esperando señal GPS...", Toast.LENGTH_SHORT).show()
+            if (!isRerouting) Toast.makeText(context, "Esperando señal GPS...", Toast.LENGTH_SHORT).show()
             return
         }
 
         isCalculatingRoute = true
         coroutineScope.launch {
             val startPoint = GeoPoint(startLat, startLon)
+            lastRouteCalcPoint = startPoint
+
             var routePoints = emptyList<GeoPoint>()
             var steps = emptyList<StepInstruction>()
+            var alternatives = emptyList<LocalRouteResult>()
 
+            // 1. INTENTO ONLINE: OSRM con parámetro de dirección (bearing) para respetar sentidos viales
             try {
-                // 1. INTENTO ONLINE: OSRM (Calles reales)
+                val currentBearing = UserLocationState.currentBearing
                 val result = OsrmRoutingService.fetchRealStreetRoute(
                     start = startPoint,
                     end = targetPoint,
-                    profile = "Vehiculo"
+                    profile = "Vehiculo",
+                    bearing = currentBearing
                 )
                 if (result.points.isNotEmpty()) {
                     routePoints = result.points
                     steps = result.steps
                 }
             } catch (e: Exception) {
-                Log.w("MAP_ROUTE", "Sin internet, cambiando a sistema de rutas internas de Room")
+                Log.w("MAP_ROUTE", "Sin internet para OSRM, cambiando a motor de rutas offline de Room")
             }
 
-            // 2. RESPALDO OFFLINE INTERNO (Room / Base de datos local)
+            // 2. RESPALDO OFFLINE INTERNO (LocalRouteEngine / Grafo vial local)
             if (routePoints.isEmpty()) {
-                val database = EvacuAppDatabase.getInstance(context)
+                try {
+                    LocalRouteEngine.initialize(context)
+                    val originCoord = startPoint.toRouteCoordinate()
+                    val destCoord = targetPoint.toRouteCoordinate()
 
-                // Opcional: Aquí puedes consultar los nodos de tu grafo vial local almacenados en Room
-                // val localNodes = database.roadGraphDao().getNodesForOfflinePath(...)
+                    val computedAlternatives = LocalRouteEngine.calculateRouteAlternatives(
+                        origin = originCoord,
+                        destination = destCoord,
+                        profile = RouteMobilityProfile.VEHICLE
+                    )
 
-                // Si la consulta local devuelve nodos, los usas. Como respaldo inteligente con quiebres viales:
-                val fallbackRoute = mutableListOf<GeoPoint>()
-                fallbackRoute.add(startPoint)
+                    if (computedAlternatives.isNotEmpty()) {
+                        alternatives = computedAlternatives
+                        val bestResult = computedAlternatives.firstOrNull { it.variant == RouteVariant.PRINCIPAL }
+                            ?: computedAlternatives.first()
+                        routePoints = bestResult.points.map { it.toGeoPoint() }
+                        selectedRouteVariant = bestResult
+                    }
+                } catch (e: Exception) {
+                    Log.e("MAP_ROUTE_OFFLINE", "Error al calcular alternativas locales: ${e.message}")
+                }
 
-                // Agregamos un punto intermedio simulando un nodo vial interno para evitar la línea totalmente recta
-                val midLat = (startPoint.latitude + targetPoint.latitude) / 2 + 0.0004
-                val midLon = (startPoint.longitude + targetPoint.longitude) / 2 - 0.0004
-                fallbackRoute.add(GeoPoint(midLat, midLon))
+                if (routePoints.isEmpty()) {
+                    val fallbackRoute = mutableListOf<GeoPoint>()
+                    fallbackRoute.add(startPoint)
+                    val midLat = (startPoint.latitude + targetPoint.latitude) / 2 + 0.0004
+                    val midLon = (startPoint.longitude + targetPoint.longitude) / 2 - 0.0004
+                    fallbackRoute.add(GeoPoint(midLat, midLon))
+                    fallbackRoute.add(targetPoint)
+                    routePoints = fallbackRoute
+                }
 
-                fallbackRoute.add(targetPoint)
-                routePoints = fallbackRoute
-
-                Toast.makeText(context, "Modo Offline: Usando red vial interna del celular", Toast.LENGTH_SHORT).show()
+                if (!isRerouting) {
+                    Toast.makeText(context, "Modo Offline: Usando red vial interna del celular", Toast.LENGTH_SHORT).show()
+                }
             }
 
             if (routePoints.isNotEmpty()) {
                 customDestination = targetPoint
                 customDestinationName = targetName.ifBlank { "Zona de Emergencia" }
                 customRoutePoints = routePoints
+                routeAlternatives = alternatives
                 routeSteps = steps
                 isAutomaticEvacuation = automatic
             } else {
-                Toast.makeText(context, "No se pudo generar la ruta", Toast.LENGTH_SHORT).show()
+                if (!isRerouting) Toast.makeText(context, "No se pudo generar la ruta", Toast.LENGTH_SHORT).show()
             }
             isCalculatingRoute = false
+        }
+    }
+
+    // DETECCIÓN DE INCIDENTES BLOQUEANTES EN LA RUTA ACTUAL (Desvío automático)
+    LaunchedEffect(sharedIncidents, customRoutePoints) {
+        if (customDestination != null && customRoutePoints.isNotEmpty() && !isCalculatingRoute) {
+            val blockingIncident = findBlockingIncidentOnRoute(customRoutePoints, sharedIncidents)
+            if (blockingIncident != null) {
+                Log.w("MAP_DESVIO", "¡Incidente bloqueante detectado en la ruta! (${blockingIncident.type.displayName}). Desviando...")
+                Toast.makeText(
+                    context,
+                    "⚠️ Incidente reportado en tu ruta (${blockingIncident.type.displayName}). Recalculando desvío...",
+                    Toast.LENGTH_LONG
+                ).show()
+
+                calculateRouteToPoint(
+                    targetPoint = customDestination!!,
+                    targetName = customDestinationName,
+                    automatic = isAutomaticEvacuation,
+                    isRerouting = true
+                )
+            }
         }
     }
 
@@ -279,7 +394,6 @@ fun MapScreen() {
         }
     }
 
-    // Cargar POIs automáticamente al obtener ubicación
     LaunchedEffect(currentLatitude, currentLongitude) {
         if (currentLatitude != null && currentLongitude != null) {
             loadPointsOfInterest(selectedPoiType)
@@ -292,10 +406,13 @@ fun MapScreen() {
         customDestination = null
         customDestinationName = ""
         customRoutePoints = emptyList()
+        routeAlternatives = emptyList()
+        selectedRouteVariant = null
         routeSteps = emptyList()
         customDistanceText = ""
         customDurationText = ""
         isAutomaticEvacuation = false
+        lastRouteCalcPoint = null
         CustomVoicePlayer.stop()
     }
 
@@ -333,10 +450,30 @@ fun MapScreen() {
                     if (location.hasSpeed()) {
                         currentSpeedMps = location.speed.toDouble()
                     }
+                    if (location.hasBearing()) {
+                        UserLocationState.currentBearing = location.bearing
+                    }
 
                     val newGeoPoint = GeoPoint(location.latitude, location.longitude)
                     UserLocationState.currentLocation = newGeoPoint
 
+                    // 1. RECÁLCULO DINÁMICO EN MOVIMIENTO (> 25 METROS)
+                    if (isNavigating && customDestination != null && !isCalculatingRoute) {
+                        val lastCalc = lastRouteCalcPoint
+                        val distMoved = if (lastCalc != null) newGeoPoint.distanceToAsDouble(lastCalc) else Double.MAX_VALUE
+
+                        if (distMoved >= 25.0) {
+                            Log.d("MAP_REROUTE", "Usuario se desplazó ${distMoved.toInt()}m (>25m). Recalculando ruta en movimiento...")
+                            calculateRouteToPoint(
+                                targetPoint = customDestination!!,
+                                targetName = customDestinationName,
+                                automatic = isAutomaticEvacuation,
+                                isRerouting = true
+                            )
+                        }
+                    }
+
+                    // 2. GUÍA VOCAL DE PASOS DE NAVEGACIÓN
                     if (isNavigating && routeSteps.isNotEmpty() && currentStepIndex < routeSteps.size) {
                         val currentStep = routeSteps[currentStepIndex]
                         val distanceToStep = newGeoPoint.distanceToAsDouble(currentStep.location)
@@ -371,6 +508,7 @@ fun MapScreen() {
                         currentLatitude = location.latitude
                         currentLongitude = location.longitude
                         if (location.hasSpeed()) currentSpeedMps = location.speed.toDouble()
+                        if (location.hasBearing()) UserLocationState.currentBearing = location.bearing
                         UserLocationState.currentLocation = GeoPoint(location.latitude, location.longitude)
                     }
                     recenterTrigger++
@@ -419,6 +557,8 @@ fun MapScreen() {
             isTrackingUser = isTrackingUser,
             destinationPoint = customDestination,
             routePoints = customRoutePoints,
+            routeAlternatives = routeAlternatives,
+            selectedRouteVariant = selectedRouteVariant,
             incidents = sharedIncidents,
             safeZones = safeZones,
             pointsOfInterest = pointsOfInterest,
@@ -436,6 +576,10 @@ fun MapScreen() {
                     isTrackingUser = false
                     calculateRouteToPoint(targetPoint = point, targetName = name)
                 }
+            },
+            onRouteVariantSelected = { variant ->
+                selectedRouteVariant = variant
+                customRoutePoints = variant.points.map { it.toGeoPoint() }
             },
             onMapTouched = { isTrackingUser = false },
             onMapLongClick = { point: GeoPoint ->
@@ -676,129 +820,146 @@ fun MapScreen() {
             )
         }
 
-        // PANEL INFERIOR CON DETALLES Y ACCIÓN DE EVACUACIÓN
-        Card(
+        // PANEL INFERIOR CON SELECCIÓN DE RUTAS Y ACCIÓN DE EVACUACIÓN
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp)
                 .align(Alignment.BottomCenter),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            // Panel de selección de alternativas de ruta (Ruta Rápida, Segura, Accesible)
+            if (routeAlternatives.isNotEmpty() && !isNavigating) {
+                RouteOptionsPanel(
+                    routes = routeAlternatives,
+                    selectedRoute = selectedRouteVariant,
+                    onRouteSelected = { variant ->
+                        selectedRouteVariant = variant
+                        customRoutePoints = variant.points.map { it.toGeoPoint() }
+                    }
+                )
+            }
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
             ) {
-                if (isNavigating) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = "Navegación en Curso",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = TextPrimary
-                            )
-                            Text(
-                                text = "Distancia: $dynamicDistanceText | Tiempo: $dynamicDurationText",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = SafeGreen
-                            )
-                        }
-                    }
-                    Button(
-                        onClick = { stopNavigation() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = Color.White)
-                    ) {
-                        Icon(imageVector = Icons.Default.Stop, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "DETENER NAVEGACIÓN", fontWeight = FontWeight.Bold)
-                    }
-                } else if (customDestination != null) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = if (isAutomaticEvacuation) "Ruta de evacuación" else "Ruta lista",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = TextPrimary
-                            )
-                            if (customDestinationName.isNotBlank()) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    if (isNavigating) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
                                 Text(
-                                    text = "Destino: $customDestinationName",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextSecondary
+                                    text = "Navegación en Curso",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    text = "Distancia: $dynamicDistanceText | Tiempo: $dynamicDurationText",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = SafeGreen
                                 )
                             }
-                            Text(
-                                text = "$dynamicDistanceText ($dynamicDurationText)",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = EvacuBlue
-                            )
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { stopNavigation() },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(50.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = DangerRed)
-                        ) {
-                            Text(text = "CANCELAR", fontWeight = FontWeight.Bold)
                         }
                         Button(
-                            onClick = {
-                                isNavigating = true
-                                isTrackingUser = true
-                                currentStepIndex = if (routeSteps.size > 1) 1 else 0
-                                CustomVoicePlayer.playAudio(context, R.raw.inicio_evacuacion)
-                            },
+                            onClick = { stopNavigation() },
                             modifier = Modifier
-                                .weight(1f)
+                                .fillMaxWidth()
                                 .height(50.dp),
                             shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = SafeGreen, contentColor = Color.White)
+                            colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = Color.White)
                         ) {
-                            Text(text = "IR", fontWeight = FontWeight.Bold)
+                            Icon(imageVector = Icons.Default.Stop, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(text = "DETENER NAVEGACIÓN", fontWeight = FontWeight.Bold)
                         }
-                    }
-                } else {
-                    Text(
-                        text = "¿Necesitas evacuar?",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
-                    )
-                    Button(
-                        onClick = { startAutomaticEvacuation() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp),
-                        shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = Color.White)
-                    ) {
-                        Icon(imageVector = Icons.Default.Warning, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "EVACUAR", fontWeight = FontWeight.Bold)
+                    } else if (customDestination != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = if (isAutomaticEvacuation) "Ruta de evacuación" else "Ruta lista",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary
+                                )
+                                if (customDestinationName.isNotBlank()) {
+                                    Text(
+                                        text = "Destino: $customDestinationName",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary
+                                    )
+                                }
+                                Text(
+                                    text = "$dynamicDistanceText ($dynamicDurationText)",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = EvacuBlue
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { stopNavigation() },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(50.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = DangerRed)
+                            ) {
+                                Text(text = "CANCELAR", fontWeight = FontWeight.Bold)
+                            }
+                            Button(
+                                onClick = {
+                                    isNavigating = true
+                                    isTrackingUser = true
+                                    currentStepIndex = if (routeSteps.size > 1) 1 else 0
+                                    CustomVoicePlayer.playAudio(context, R.raw.inicio_evacuacion)
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(50.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = SafeGreen, contentColor = Color.White)
+                            ) {
+                                Text(text = "IR", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "¿Necesitas evacuar?",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                        Button(
+                            onClick = { startAutomaticEvacuation() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = Color.White)
+                        ) {
+                            Icon(imageVector = Icons.Default.Warning, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(text = "EVACUAR", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }

@@ -38,7 +38,9 @@ object OsrmRoutingService {
     suspend fun fetchRealStreetRoute(
         start: GeoPoint,
         end: GeoPoint,
-        profile: String = "Vehículo"
+        profile: String = "Vehículo",
+        bearing: Float? = null,
+        avoidPoints: List<GeoPoint> = emptyList()
     ): OsrmRouteResponse = withContext(Dispatchers.IO) {
 
         val osrmProfile = when (profile.lowercase().trim()) {
@@ -48,7 +50,6 @@ object OsrmRoutingService {
             else -> "driving"
         }
 
-        // CORRECCIÓN 1: Soporte correcto para el servidor de peatón ("foot")
         val serviceName = when (osrmProfile) {
             "driving" -> "car"
             "cycling" -> "bike"
@@ -74,6 +75,14 @@ object OsrmRoutingService {
             append("&geometries=geojson")
             append("&steps=true")
             append("&alternatives=false")
+
+            // Incorporar orientación del vehículo (bearing) para respetar sentido de tránsito
+            if (bearing != null && bearing >= 0 && osrmProfile == "driving") {
+                val b = bearing.toInt().coerceIn(0, 359)
+                append("&bearings=")
+                append(b)
+                append(",45;")
+            }
         }
 
         var connection: HttpURLConnection? = null
@@ -215,6 +224,7 @@ object OsrmRoutingService {
         start: GeoPoint,
         end: GeoPoint,
         avoidPoints: List<GeoPoint>,
-        profile: String
-    ) = fetchRealStreetRoute(start, end, profile)
+        profile: String,
+        bearing: Float? = null
+    ) = fetchRealStreetRoute(start, end, profile, bearing, avoidPoints)
 }
