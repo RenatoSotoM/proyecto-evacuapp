@@ -125,10 +125,26 @@ object LocalRouteEngine {
 
         val results = mutableListOf<LocalRouteResult>()
         principal?.let { results += it.toRouteResult(RouteVariant.PRINCIPAL, "Ruta Rápida", blockedSegmentIds) }
-        segura?.let { results += it.toRouteResult(RouteVariant.SEGURA, "Ruta Evitando Riesgo", blockedSegmentIds) }
+        segura?.let { results += it.toRouteResult(RouteVariant.SEGURA, "Ruta Segura", blockedSegmentIds) }
         accesible?.let { results += it.toRouteResult(RouteVariant.ACCESIBLE, "Ruta Accesible", blockedSegmentIds) }
 
-        return results.distinctBy { it.points }
+        val distinctResults = results.distinctBy { it.points }
+        val count = distinctResults.size
+
+        if (count == 0) {
+            val isolatedResult = emptyRouteResult(origin, destination).copy(
+                statusMessage = "⚠️ Sin acceso: No existen rutas posibles hacia el destino debido a bloqueos totales."
+            )
+            return listOf(isolatedResult)
+        }
+
+        val statusMessage = if (count < 3) {
+            "⚠️ Se encontraron $count rutas disponibles. No hay más alternativas físicamente distintas en esta zona."
+        } else {
+            null
+        }
+
+        return distinctResults.map { it.copy(statusMessage = statusMessage) }
     }
 
     private fun PathResult.toRouteResult(

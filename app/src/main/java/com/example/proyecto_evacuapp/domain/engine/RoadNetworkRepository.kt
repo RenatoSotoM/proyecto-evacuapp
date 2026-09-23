@@ -2,6 +2,7 @@ package com.example.proyecto_evacuapp.domain.engine
 
 import android.util.Log
 import com.example.proyecto_evacuapp.ui.components.IncidentEntity
+import com.example.proyecto_evacuapp.ui.components.IncidentSeverity
 import com.example.proyecto_evacuapp.ui.components.IncidentStatus
 import com.example.proyecto_evacuapp.ui.components.IncidentType
 import com.example.proyecto_evacuapp.ui.components.RouteCoordinate
@@ -71,22 +72,26 @@ class RoadNetworkRepository {
     fun graphSnapshot(): RoadGraph = graph
 
     /**
-     * Aplica el efecto de los incidentes verificados sobre las aristas en memoria.
+     * Aplica el efecto de los incidentes sobre las aristas en memoria segun su fiabilidad y severidad.
      */
     suspend fun applyIncidents(incidents: List<IncidentEntity>): Boolean {
         var anyChanged = false
 
         mutex.withLock {
-            val verifiedIds = HashSet<String>()
+            val activeIncidentIds = HashSet<String>()
 
             for (incident in incidents) {
                 val status = parseIncidentStatus(incident.status)
                 val type = IncidentType.fromApiValue(incident.type)
+                val severity = IncidentSeverity.fromApiValue(incident.severity)
 
-                if (status == IncidentStatus.VERIFIED &&
-                    (type in RISK_INCIDENT_TYPES || type == IncidentType.RUTA_INACCESIBLE)
-                ) {
-                    verifiedIds += incident.localId
+                val isVerified = status == IncidentStatus.VERIFIED
+                val isCriticalOrHigh = severity == IncidentSeverity.CRITICA || severity == IncidentSeverity.ALTA
+                val isBlockingType = type in RISK_INCIDENT_TYPES || type == IncidentType.RUTA_INACCESIBLE
+
+                if (isBlockingType && (isVerified || isCriticalOrHigh)) {
+                    // 1. BLOQUEO COMPLETO (Costo Infinito C(e) = infinity)
+                    activeIncidentIds += incident.localId
                     val targetEdges = resolveAffectedEdges(incident)
                     if (targetEdges.isEmpty()) continue
 
@@ -103,17 +108,35 @@ class RoadNetworkRepository {
                         }
                         if (changed) {
                             anyChanged = true
-                            Log.d(TAG, "Arista ${edge.id} actualizada por incidente VERIFIED ${incident.localId}")
+                            Log.d(TAG, "Arista ${edge.id} BLOQUEADA por incidente VERIFIED/ALTA/CRITICA (${incident.localId})")
+                        }
+                    }
+                } else if (isBlockingType && (status == IncidentStatus.PROBABLE || status == IncidentStatus.PENDING || status == IncidentStatus.LOCAL_PENDING)) {
+                    // 2. INCIDENTE EN REVISIÓN / MENOR SEVERIDAD: Incrementa el costo de riesgo R(e)
+                    activeIncidentIds += incident.localId
+                    val targetEdges = resolveAffectedEdges(incident)
+                    if (targetEdges.isEmpty()) continue
+
+                    for (edge in targetEdges) {
+                        val changed = graph.applyEdgeRisk(
+                            edge.id,
+                            riskWeight = 0.8,
+                            blocked = false, // Sin bloqueo absoluto, pero alto riesgo R(e)
+                            incidentLocalId = incident.localId
+                        )
+                        if (changed) {
+                            anyChanged = true
+                            Log.d(TAG, "Arista ${edge.id} asignada riesgo R(e)=0.8 por reporte en revisión (${incident.localId})")
                         }
                     }
                 }
             }
 
-            // Liberar aristas cuyo incidente ya no está VERIFIED
+            // Liberar aristas cuyo incidente ya no aplica
             val blockedByStaleIncident = graph.allEdges()
                 .mapNotNull { it.blockingIncidentLocalId }
                 .toSet()
-                .filter { it !in verifiedIds }
+                .filter { it !in activeIncidentIds }
 
             for (staleIncidentId in blockedByStaleIncident) {
                 val relatedEdges = graph.findEdgesByIncidentId(staleIncidentId)
@@ -121,7 +144,7 @@ class RoadNetworkRepository {
                     val changed = graph.clearEdgeRisk(edge.id)
                     if (changed) {
                         anyChanged = true
-                        Log.d(TAG, "Arista ${edge.id} liberada: incidente $staleIncidentId ya no está VERIFIED")
+                        Log.d(TAG, "Arista ${edge.id} liberada: incidente $staleIncidentId desactivado")
                     }
                 }
             }

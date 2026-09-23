@@ -43,11 +43,12 @@ data class LocalRouteResult(
     val durationSeconds: Double,
     val engineName: String,
     val warnings: List<String> = emptyList(),
-    // Campos nuevos con default: no rompen construcciones existentes de LocalRouteResult.
+    // Campos con default: no rompen construcciones existentes de LocalRouteResult.
     val variant: RouteVariant = RouteVariant.PRINCIPAL,
     val label: String = "Ruta",
     val avoidsVerifiedRisk: Boolean = true,
-    val maxAccessibilityPenaltyOnPath: Double = 0.0
+    val maxAccessibilityPenaltyOnPath: Double = 0.0,
+    val statusMessage: String? = null
 )
 
 data class LocalIncident(
