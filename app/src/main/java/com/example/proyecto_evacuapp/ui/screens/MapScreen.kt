@@ -272,60 +272,60 @@ fun MapScreen() {
             var steps = emptyList<StepInstruction>()
             var alternatives = emptyList<LocalRouteResult>()
 
-            // 1. INTENTO ONLINE: OSRM con parámetro de dirección (bearing) para respetar sentidos viales
+            val originCoord = startPoint.toRouteCoordinate()
+            val destCoord = targetPoint.toRouteCoordinate()
+
+            // 1. CALCULAR SIEMPRE LAS ALTERNATIVAS MÚLTIPLES DE RUTA (Grafo local / CostModel)
+            try {
+                LocalRouteEngine.initialize(context)
+                val computedAlternatives = LocalRouteEngine.calculateRouteAlternatives(
+                    origin = originCoord,
+                    destination = destCoord,
+                    profile = RouteMobilityProfile.VEHICLE
+                )
+
+                if (computedAlternatives.isNotEmpty()) {
+                    alternatives = computedAlternatives
+                    val bestVariant = selectedRouteVariant
+                        ?.let { sel -> computedAlternatives.find { it.variant == sel.variant } }
+                        ?: computedAlternatives.firstOrNull { it.variant == RouteVariant.PRINCIPAL }
+                        ?: computedAlternatives.first()
+
+                    selectedRouteVariant = bestVariant
+                    routePoints = bestVariant.points.map { it.toGeoPoint() }
+                }
+            } catch (e: Exception) {
+                Log.e("MAP_ROUTE_OFFLINE", "Error al calcular alternativas locales: ${e.message}")
+            }
+
+            // 2. INTENTO ONLINE: OSRM con parámetro de dirección (bearing) para pasos e instrucciones
             try {
                 val currentBearing = UserLocationState.currentBearing
-                val result = OsrmRoutingService.fetchRealStreetRoute(
+                val osrmResult = OsrmRoutingService.fetchRealStreetRoute(
                     start = startPoint,
                     end = targetPoint,
                     profile = "Vehiculo",
                     bearing = currentBearing
                 )
-                if (result.points.isNotEmpty()) {
-                    routePoints = result.points
-                    steps = result.steps
+                if (osrmResult.points.isNotEmpty()) {
+                    steps = osrmResult.steps
+                    if (routePoints.isEmpty()) {
+                        routePoints = osrmResult.points
+                    }
                 }
             } catch (e: Exception) {
-                Log.w("MAP_ROUTE", "Sin internet para OSRM, cambiando a motor de rutas offline de Room")
+                Log.w("MAP_ROUTE", "Sin internet para OSRM, usando motor de rutas local")
             }
 
-            // 2. RESPALDO OFFLINE INTERNO (LocalRouteEngine / Grafo vial local)
+            // 3. RESPALDO EN LÍNEA INTERMEDIA SI AÚN ESTÁ VACÍA
             if (routePoints.isEmpty()) {
-                try {
-                    LocalRouteEngine.initialize(context)
-                    val originCoord = startPoint.toRouteCoordinate()
-                    val destCoord = targetPoint.toRouteCoordinate()
-
-                    val computedAlternatives = LocalRouteEngine.calculateRouteAlternatives(
-                        origin = originCoord,
-                        destination = destCoord,
-                        profile = RouteMobilityProfile.VEHICLE
-                    )
-
-                    if (computedAlternatives.isNotEmpty()) {
-                        alternatives = computedAlternatives
-                        val bestResult = computedAlternatives.firstOrNull { it.variant == RouteVariant.PRINCIPAL }
-                            ?: computedAlternatives.first()
-                        routePoints = bestResult.points.map { it.toGeoPoint() }
-                        selectedRouteVariant = bestResult
-                    }
-                } catch (e: Exception) {
-                    Log.e("MAP_ROUTE_OFFLINE", "Error al calcular alternativas locales: ${e.message}")
-                }
-
-                if (routePoints.isEmpty()) {
-                    val fallbackRoute = mutableListOf<GeoPoint>()
-                    fallbackRoute.add(startPoint)
-                    val midLat = (startPoint.latitude + targetPoint.latitude) / 2 + 0.0004
-                    val midLon = (startPoint.longitude + targetPoint.longitude) / 2 - 0.0004
-                    fallbackRoute.add(GeoPoint(midLat, midLon))
-                    fallbackRoute.add(targetPoint)
-                    routePoints = fallbackRoute
-                }
-
-                if (!isRerouting) {
-                    Toast.makeText(context, "Modo Offline: Usando red vial interna del celular", Toast.LENGTH_SHORT).show()
-                }
+                val fallbackRoute = mutableListOf<GeoPoint>()
+                fallbackRoute.add(startPoint)
+                val midLat = (startPoint.latitude + targetPoint.latitude) / 2 + 0.0004
+                val midLon = (startPoint.longitude + targetPoint.longitude) / 2 - 0.0004
+                fallbackRoute.add(GeoPoint(midLat, midLon))
+                fallbackRoute.add(targetPoint)
+                routePoints = fallbackRoute
             }
 
             if (routePoints.isNotEmpty()) {
