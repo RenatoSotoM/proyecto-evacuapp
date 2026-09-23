@@ -27,7 +27,9 @@ import com.example.proyecto_evacuapp.R
 import com.example.proyecto_evacuapp.data.remote.PointOfInterestResponse
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.data.remote.SafeZoneNearbyDto
+import com.example.proyecto_evacuapp.data.repository.IncidentRepository
 import com.example.proyecto_evacuapp.ui.components.ConnectivityBadge
+import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
 import com.example.proyecto_evacuapp.ui.components.MapViewOSM
 import com.example.proyecto_evacuapp.ui.components.OsrmRoutingService
 import com.example.proyecto_evacuapp.ui.components.SosMeshtaticMenu
@@ -79,6 +81,7 @@ fun MapScreen() {
     val context = LocalContext.current
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
     val coroutineScope = rememberCoroutineScope()
+    val sharedIncidents = IncidentSharedState.incidents
 
     // ESTADOS DE GPS Y NAVEGACIÓN
     var isTrackingUser by remember { mutableStateOf(true) }
@@ -127,6 +130,25 @@ fun MapScreen() {
     var isNavigating by remember { mutableStateOf(false) }
     var currentStepIndex by remember { mutableIntStateOf(0) }
 
+    // CARGAR INCIDENTES DE LA API Y SINCRONIZAR CON EL ESTADO COMPARTIDO
+    LaunchedEffect(currentLatitude, currentLongitude) {
+        try {
+            val response = IncidentRepository(RetrofitClient.incidentApiService).getIncidents(
+                lat = currentLatitude,
+                lng = currentLongitude
+            )
+            if (response.isSuccessful) {
+                val remoteList = response.body().orEmpty()
+                IncidentSharedState.syncRemoteIncidents(remoteList)
+                Log.d("MAP_INCIDENTS", "Incidentes cargados y sincronizados: ${remoteList.size}")
+            } else {
+                Log.w("MAP_INCIDENTS", "Respuesta no exitosa al obtener incidentes remotos: HTTP ${response.code()}")
+            }
+        } catch (e: Exception) {
+            Log.e("MAP_INCIDENTS", "Error al cargar incidentes remotos: ${e.message}", e)
+        }
+    }
+
     // Cargar zonas seguras cercanas desde la API (30 km de radio)
     LaunchedEffect(currentLatitude, currentLongitude) {
         val lat = currentLatitude
@@ -157,7 +179,7 @@ fun MapScreen() {
             name = nearest.name
         )
     }
-    // 1. PRIMERO DECLARAS ESTA:
+
     fun calculateRouteToPoint(
         targetPoint: GeoPoint,
         targetName: String = "",
@@ -194,7 +216,6 @@ fun MapScreen() {
         }
     }
 
-    // 2. LUEGO PUEDES USARLA DENTRO DE ESTA:
     fun loadPointsOfInterest(type: String? = null) {
         val lat = currentLatitude
         val lng = currentLongitude
@@ -211,14 +232,10 @@ fun MapScreen() {
 
                     if (response.isSuccessful) {
                         val list = response.body() ?: emptyList()
-
-                        // 👈 Solo guardamos los puntos para que aparezcan en el mapa o interfaz
                         pointsOfInterest = list
-
                         if (list.isEmpty()) {
                             Toast.makeText(context, "No se encontraron elementos cercanos", Toast.LENGTH_SHORT).show()
                         }
-                        // ❌ ELIMINADO: Ya no llamamos a calculateRouteToPoint aquí de forma automática.
                     }
                 } catch (e: Exception) {
                     Log.e("POIS", "Error al obtener puntos: ${e.message}")
@@ -248,7 +265,6 @@ fun MapScreen() {
         isAutomaticEvacuation = false
         CustomVoicePlayer.stop()
     }
-
 
     fun startAutomaticEvacuation() {
         val startLat = currentLatitude
@@ -370,6 +386,7 @@ fun MapScreen() {
             isTrackingUser = isTrackingUser,
             destinationPoint = customDestination,
             routePoints = customRoutePoints,
+            incidents = sharedIncidents,
             safeZones = safeZones,
             pointsOfInterest = pointsOfInterest,
             onPoiSelected = { poi ->
@@ -396,7 +413,7 @@ fun MapScreen() {
             }
         )
 
-        // BOTONES FLOTANTES DE CÁMARA
+        // BOTONES FLOTANTES DE CÁMARA (VISTA GENERAL Y RECENTRAR)
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -711,7 +728,7 @@ fun MapScreen() {
                                 .weight(1f)
                                 .height(50.dp),
                             shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = DangerRed)
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = DangerRed)
                         ) {
                             Text(text = "CANCELAR", fontWeight = FontWeight.Bold)
                         }

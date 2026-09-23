@@ -65,8 +65,8 @@ object LocalRouteEngine {
             val distance = point.distanceToAsDouble(incidentLocation)
 
             val radius = when (incident.incidentSeverity.uppercase()) {
-                "ALTA", "ALTO" -> 500.0
-                "MEDIA", "MEDIO" -> 250.0
+                "CRITICA", "CRITICAL", "ALTA", "ALTO", "HIGH" -> 500.0
+                "MEDIA", "MEDIO", "MEDIUM" -> 250.0
                 else -> 100.0
             }
 

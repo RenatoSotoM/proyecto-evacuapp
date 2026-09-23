@@ -5,6 +5,8 @@ import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
+import com.example.proyecto_evacuapp.ui.components.IncidentSeverity
+import com.example.proyecto_evacuapp.ui.components.IncidentType
 import kotlinx.coroutines.flow.first
 
 class IncidentSyncWorker(
@@ -23,9 +25,12 @@ class IncidentSyncWorker(
 
             for (incident in localIncidents) {
                 if (incident.remoteId == null) {
+                    val typeEnum = IncidentType.fromApiValue(incident.type)
+                    val severityEnum = IncidentSeverity.fromApiValue(incident.severity)
+
                     val dto = IncidentNetworkDto(
-                        type = incident.type,
-                        severity = incident.severity,
+                        type = typeEnum.apiValue,
+                        severity = severityEnum.apiValue,
                         description = incident.description,
                         latitude = incident.latitude,
                         longitude = incident.longitude

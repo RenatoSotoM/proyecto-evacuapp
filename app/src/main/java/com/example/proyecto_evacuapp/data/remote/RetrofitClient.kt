@@ -1,19 +1,41 @@
 package com.example.proyecto_evacuapp.data.remote
 
+import android.os.Build
 import okhttp3.OkHttpClient
-import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
-import retrofit2.http.GET
-import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
 
 object RetrofitClient {
 
-    // 📱 Para dispositivo físico conectado a tu Wi-Fi:
-    private const val BASE_URL = "http://192.168.100.12:3000/api/v1/"
-    // 💻 Para emulador de Android Studio:
-    // private const val BASE_URL = "http://10.0.2.2:3000/api/v1/"
+    private const val EMULATOR_BASE_URL = "http://10.0.2.2:3000/api/v1/"
+    private const val PHYSICAL_BASE_URL = "http://192.168.100.12:3000/api/v1/"
+
+    /**
+     * Permite sobreescribir manualmente la URL base si es necesario.
+     */
+    var customBaseUrl: String? = null
+
+    /**
+     * Detecta si la aplicación se está ejecutando en un emulador de Android Studio.
+     */
+    val isEmulator: Boolean
+        get() = Build.FINGERPRINT.startsWith("generic")
+                || Build.FINGERPRINT.startsWith("unknown")
+                || Build.MODEL.contains("google_sdk")
+                || Build.MODEL.contains("Emulator")
+                || Build.MODEL.contains("Android SDK built for x86")
+                || Build.MANUFACTURER.contains("Genymotion")
+                || (Build.BRAND.startsWith("generic") && Build.DEVICE.startsWith("generic"))
+                || (Build.PRODUCT == "google_sdk")
+                || Build.HARDWARE.contains("goldfish")
+                || Build.HARDWARE.contains("ranchu")
+
+    /**
+     * URL base dinámica que conmuta entre emulador (10.0.2.2) y dispositivo físico (192.168.100.12).
+     */
+    val BASE_URL: String
+        get() = customBaseUrl ?: if (isEmulator) EMULATOR_BASE_URL else PHYSICAL_BASE_URL
 
     // Almacenamiento temporal en memoria del Token JWT
     var authToken: String? = null
@@ -35,11 +57,13 @@ object RetrofitClient {
         }
         .build()
 
-    private val retrofit: Retrofit = Retrofit.Builder()
-        .baseUrl(BASE_URL)
-        .client(okHttpClient)
-        .addConverterFactory(GsonConverterFactory.create())
-        .build()
+    private val retrofit: Retrofit by lazy {
+        Retrofit.Builder()
+            .baseUrl(BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+    }
 
     val authApiService: AuthApiService by lazy {
         retrofit.create(AuthApiService::class.java)
