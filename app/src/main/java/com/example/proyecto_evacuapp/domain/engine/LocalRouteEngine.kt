@@ -1,73 +1,180 @@
 package com.example.proyecto_evacuapp.domain.engine
 
-import com.example.proyecto_evacuapp.data.local.IncidentEntity
+import android.content.Context
+import android.util.Log
+import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
+import com.example.proyecto_evacuapp.ui.components.IncidentEntity
+import com.example.proyecto_evacuapp.ui.components.IncidentSeverity
 import com.example.proyecto_evacuapp.ui.components.LocalRouteResult
 import com.example.proyecto_evacuapp.ui.components.RouteCoordinate
 import com.example.proyecto_evacuapp.ui.components.RouteMobilityProfile
+import com.example.proyecto_evacuapp.ui.components.RouteVariant
 import org.osmdroid.util.GeoPoint
 import kotlin.math.roundToInt
 
-// Extensiones de compatibilidad para asegurar acceso a propiedades sin importar el nombrado interno
-private val IncidentEntity.incidentLat: Double
-    get() = runCatching { this.javaClass.getMethod("getLatitude").invoke(this) as Double }
-        .getOrElse { runCatching { this.javaClass.getMethod("getLat").invoke(this) as Double }.getOrDefault(0.0) }
+private const val TAG = "LocalRouteEngine"
 
-private val IncidentEntity.incidentLng: Double
-    get() = runCatching { this.javaClass.getMethod("getLongitude").invoke(this) as Double }
-        .getOrElse { runCatching { this.javaClass.getMethod("getLng").invoke(this) as Double }.getOrDefault(0.0) }
-
-private val IncidentEntity.incidentSeverity: String
-    get() = runCatching { this.javaClass.getMethod("getSeverityLevel").invoke(this) as String }
-        .getOrElse { runCatching { this.javaClass.getMethod("getSeverity").invoke(this) as String }.getOrDefault("MEDIA") }
-
+/**
+ * Motor de ruteo local offline-first[cite: 5].
+ */
 object LocalRouteEngine {
+
+    private var repository: RoadNetworkRepository? = null
+
+    fun initialize(context: Context) {
+        if (repository != null) return
+        repository = RoadNetworkRepository()
+        Log.d(TAG, "LocalRouteEngine inicializado")
+    }
+
+    private fun requireRepository(): RoadNetworkRepository =
+        repository ?: error(
+            "LocalRouteEngine.initialize(context) debe llamarse antes de calcular rutas"
+        )
+
+    suspend fun syncIncidents(incidents: List<IncidentEntity>): Boolean {
+        return requireRepository().applyIncidents(incidents)
+    }
 
     suspend fun calculateRoute(
         origin: RouteCoordinate,
         destination: RouteCoordinate,
         profile: RouteMobilityProfile,
-        blockedSegmentIds: Set<String>
+        blockedSegmentIds: Set<String> = emptySet()
     ): LocalRouteResult {
-        val streetNodes = sampleStreetNetwork(profile)
+        val alternatives = calculateRouteAlternatives(origin, destination, profile, blockedSegmentIds)
+        return alternatives.firstOrNull { it.variant == RouteVariant.PRINCIPAL }
+            ?: alternatives.firstOrNull()
+            ?: emptyRouteResult(origin, destination)
+    }
 
-        val routePoints = buildRouteAlongStreetNodes(
-            origin = origin,
-            destination = destination,
-            candidates = streetNodes,
-            blockedSegmentIds = blockedSegmentIds
-        )
+    suspend fun calculateRouteAlternatives(
+        origin: RouteCoordinate,
+        destination: RouteCoordinate,
+        profile: RouteMobilityProfile,
+        blockedSegmentIds: Set<String> = emptySet()
+    ): List<LocalRouteResult> {
+        val repo = requireRepository()
+        // Llamada correcta al repositorio dinámico con origen y destino
+        repo.ensureLoadedForRoute(origin, destination)
+        val graph = repo.graphSnapshot()
 
-        val distance = routeDistanceMeters(routePoints)
-        val speedMetersPerSecond = when (profile) {
-            RouteMobilityProfile.VEHICLE -> 8.3
-            RouteMobilityProfile.BICYCLE -> 4.2
-            RouteMobilityProfile.REDUCED_MOBILITY -> 1.0
-            RouteMobilityProfile.WALKING -> 1.3
+        if (graph.isEmpty()) {
+            Log.w(TAG, "Grafo vial vacío, no es posible calcular rutas")
+            return emptyList()
         }
 
+        val startNode = graph.nearestNode(origin)
+        val endNode = graph.nearestNode(destination)
+        if (startNode == null || endNode == null) {
+            Log.w(TAG, "No se encontraron nodos cercanos al origen/destino")
+            return emptyList()
+        }
+
+        val sessionPenalties = blockedSegmentIds.associateWith { HARD_BLOCK_COST }
+        val avoidInaccessibleHard = profile == RouteMobilityProfile.REDUCED_MOBILITY
+
+        val principalWeights = CostProfiles.weightsFor(profile)
+        val principal = graph.shortestPath(
+            startNodeId = startNode.id,
+            endNodeId = endNode.id,
+            weights = principalWeights,
+            profile = profile,
+            edgePenalties = sessionPenalties
+        )
+
+        var segura = graph.shortestPath(
+            startNodeId = startNode.id,
+            endNodeId = endNode.id,
+            weights = CostProfiles.SAFE_WEIGHTS,
+            profile = profile,
+            avoidVerifiedRisk = true,
+            edgePenalties = sessionPenalties
+        )
+        if (segura != null && principal != null && segura.edgeIds == principal.edgeIds) {
+            val diversityPenalties = sessionPenalties + principal.edgeIds.associateWith { 5_000.0 }
+            segura = graph.shortestPath(
+                startNodeId = startNode.id,
+                endNodeId = endNode.id,
+                weights = CostProfiles.SAFE_WEIGHTS,
+                profile = profile,
+                avoidVerifiedRisk = true,
+                edgePenalties = diversityPenalties
+            ) ?: segura
+        }
+
+        var accesible = graph.shortestPath(
+            startNodeId = startNode.id,
+            endNodeId = endNode.id,
+            weights = CostProfiles.ACCESSIBLE_WEIGHTS,
+            profile = profile,
+            avoidInaccessible = avoidInaccessibleHard,
+            edgePenalties = sessionPenalties
+        )
+        if (accesible != null && principal != null && accesible.edgeIds == principal.edgeIds) {
+            val diversityPenalties = sessionPenalties + principal.edgeIds.associateWith { 5_000.0 }
+            accesible = graph.shortestPath(
+                startNodeId = startNode.id,
+                endNodeId = endNode.id,
+                weights = CostProfiles.ACCESSIBLE_WEIGHTS,
+                profile = profile,
+                avoidInaccessible = avoidInaccessibleHard,
+                edgePenalties = diversityPenalties
+            ) ?: accesible
+        }
+
+        val results = mutableListOf<LocalRouteResult>()
+        principal?.let { results += it.toRouteResult(RouteVariant.PRINCIPAL, "Ruta Rápida", blockedSegmentIds) }
+        segura?.let { results += it.toRouteResult(RouteVariant.SEGURA, "Ruta Evitando Riesgo", blockedSegmentIds) }
+        accesible?.let { results += it.toRouteResult(RouteVariant.ACCESIBLE, "Ruta Accesible", blockedSegmentIds) }
+
+        return results.distinctBy { it.points }
+    }
+
+    private fun PathResult.toRouteResult(
+        variant: RouteVariant,
+        label: String,
+        sessionBlocks: Set<String>
+    ): LocalRouteResult {
+        val warnings = if (maxRiskOnPath >= RISK_VERIFIED_THRESHOLD || sessionBlocks.isNotEmpty()) {
+            listOf("Ruta recalculada por incidente verificado.")
+        } else {
+            emptyList()
+        }
         return LocalRouteResult(
-            points = routePoints,
-            distanceMeters = distance,
-            durationSeconds = distance / speedMetersPerSecond,
-            engineName = "Local OSM graph",
-            warnings = if (blockedSegmentIds.isNotEmpty()) {
-                listOf("Ruta recalculada por incidente verificado.")
-            } else {
-                emptyList()
-            }
+            points = points,
+            distanceMeters = distanceMeters,
+            durationSeconds = durationSeconds,
+            engineName = "Local road graph (offline)",
+            warnings = warnings,
+            variant = variant,
+            label = label,
+            avoidsVerifiedRisk = maxRiskOnPath < RISK_VERIFIED_THRESHOLD,
+            maxAccessibilityPenaltyOnPath = maxAccessibilityPenaltyOnPath
         )
     }
+
+    private fun emptyRouteResult(origin: RouteCoordinate, destination: RouteCoordinate) = LocalRouteResult(
+        points = listOf(origin, destination),
+        distanceMeters = 0.0,
+        durationSeconds = 0.0,
+        engineName = "Local road graph (offline)",
+        warnings = listOf("No fue posible calcular una ruta sobre el grafo local."),
+        variant = RouteVariant.PRINCIPAL,
+        label = "Ruta no disponible"
+    )
 
     fun calculateAvoidanceFactor(point: GeoPoint, activeIncidents: List<IncidentEntity>): Double {
         var penalty = 1.0
         activeIncidents.forEach { incident ->
-            val incidentLocation = GeoPoint(incident.incidentLat, incident.incidentLng)
+            val incidentLocation = GeoPoint(incident.latitude, incident.longitude)
             val distance = point.distanceToAsDouble(incidentLocation)
 
-            val radius = when (incident.incidentSeverity.uppercase()) {
-                "CRITICA", "CRITICAL", "ALTA", "ALTO", "HIGH" -> 500.0
-                "MEDIA", "MEDIO", "MEDIUM" -> 250.0
-                else -> 100.0
+            val severity = IncidentSeverity.fromApiValue(incident.severity)
+            val radius = when (severity) {
+                IncidentSeverity.CRITICA, IncidentSeverity.ALTA -> 500.0
+                IncidentSeverity.MEDIA -> 250.0
+                IncidentSeverity.BAJA -> 100.0
             }
 
             if (distance < radius) {
@@ -76,92 +183,6 @@ object LocalRouteEngine {
             }
         }
         return penalty
-    }
-
-    private fun sampleStreetNetwork(
-        profile: RouteMobilityProfile
-    ): List<RouteCoordinate> {
-        return when (profile) {
-            RouteMobilityProfile.VEHICLE -> listOf(
-                RouteCoordinate(-33.4672, -70.6576),
-                RouteCoordinate(-33.4675, -70.6566),
-                RouteCoordinate(-33.4669, -70.6556),
-                RouteCoordinate(-33.4659, -70.6551),
-                RouteCoordinate(-33.4648, -70.6558),
-                RouteCoordinate(-33.4638, -70.6572),
-                RouteCoordinate(-33.4638, -70.6610)
-            )
-
-            RouteMobilityProfile.BICYCLE -> listOf(
-                RouteCoordinate(-33.4672, -70.6576),
-                RouteCoordinate(-33.4674, -70.6584),
-                RouteCoordinate(-33.4669, -70.6590),
-                RouteCoordinate(-33.4661, -70.6594),
-                RouteCoordinate(-33.4653, -70.6598),
-                RouteCoordinate(-33.4646, -70.6605),
-                RouteCoordinate(-33.4638, -70.6610)
-            )
-
-            RouteMobilityProfile.REDUCED_MOBILITY -> listOf(
-                RouteCoordinate(-33.4672, -70.6576),
-                RouteCoordinate(-33.4672, -70.6583),
-                RouteCoordinate(-33.4666, -70.6588),
-                RouteCoordinate(-33.4658, -70.6594),
-                RouteCoordinate(-33.4650, -70.6600),
-                RouteCoordinate(-33.4644, -70.6605),
-                RouteCoordinate(-33.4638, -70.6610)
-            )
-
-            RouteMobilityProfile.WALKING -> listOf(
-                RouteCoordinate(-33.4672, -70.6576),
-                RouteCoordinate(-33.4671, -70.6582),
-                RouteCoordinate(-33.4666, -70.6588),
-                RouteCoordinate(-33.4660, -70.6593),
-                RouteCoordinate(-33.4652, -70.6598),
-                RouteCoordinate(-33.4645, -70.6605),
-                RouteCoordinate(-33.4638, -70.6610)
-            )
-        }
-    }
-
-    private fun buildRouteAlongStreetNodes(
-        origin: RouteCoordinate,
-        destination: RouteCoordinate,
-        candidates: List<RouteCoordinate>,
-        blockedSegmentIds: Set<String>
-    ): List<RouteCoordinate> {
-        return buildList {
-            add(origin)
-            addAll(candidates.drop(1).dropLast(1))
-            add(destination)
-        }
-    }
-
-    private fun routeDistanceMeters(
-        points: List<RouteCoordinate>
-    ): Double {
-        if (points.size < 2) return 0.0
-
-        return points.zipWithNext().sumOf { (from, to) ->
-            haversineMeters(from, to)
-        }
-    }
-
-    private fun haversineMeters(
-        a: RouteCoordinate,
-        b: RouteCoordinate
-    ): Double {
-        val earthRadius = 6_371_000.0
-        val latDiff = Math.toRadians(b.latitude - a.latitude)
-        val lonDiff = Math.toRadians(b.longitude - a.longitude)
-
-        val h = kotlin.math.sin(latDiff / 2) * kotlin.math.sin(latDiff / 2) +
-                kotlin.math.cos(Math.toRadians(a.latitude)) *
-                kotlin.math.cos(Math.toRadians(b.latitude)) *
-                kotlin.math.sin(lonDiff / 2) *
-                kotlin.math.sin(lonDiff / 2)
-
-        return 2 * earthRadius * kotlin.math.asin(kotlin.math.sqrt(h))
     }
 
     fun formatDistance(distanceMeters: Double): String {

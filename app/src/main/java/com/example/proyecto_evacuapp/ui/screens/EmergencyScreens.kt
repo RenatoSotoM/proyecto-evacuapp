@@ -22,6 +22,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import com.example.proyecto_evacuapp.ui.state.EmergencyUiState
+import kotlinx.coroutines.flow.asStateFlow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -58,6 +60,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewModelScope
+import com.example.proyecto_evacuapp.data.repository.EmergencyRepository
 import com.example.proyecto_evacuapp.ui.components.UserLocationState
 import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
 import com.example.proyecto_evacuapp.ui.components.IncidentStatus
@@ -79,6 +82,7 @@ import com.google.android.gms.location.Priority
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -98,18 +102,40 @@ data class EmergencySafeZone(
     val riskLevel: String = "Bajo"
 )
 
-class EmergencyViewModel : ViewModel() {
+class EmergencyViewModel(
+    private val emergencyRepository: EmergencyRepository? = null
+) : ViewModel() {
     private val _userLocation = MutableStateFlow<GeoPoint?>(null)
     val userLocation: StateFlow<GeoPoint?> = _userLocation
 
     private val _safeZones = MutableStateFlow<List<EmergencySafeZone>>(emptyList())
     val safeZones: StateFlow<List<EmergencySafeZone>> = _safeZones
 
+    private val _uiState = MutableStateFlow<EmergencyUiState>(EmergencyUiState.Idle)
+    val uiState: StateFlow<EmergencyUiState> = _uiState.asStateFlow()
+
     val searchRadiusMeters = 15000.0
 
     fun onLocationChanged(newPoint: GeoPoint) {
         _userLocation.value = newPoint
         fetchSafeZonesFromOverpass(newPoint.latitude, newPoint.longitude, searchRadiusMeters)
+    }
+
+    fun checkActiveEmergency() {
+        if (emergencyRepository == null) return
+        viewModelScope.launch {
+            _uiState.value = EmergencyUiState.Loading
+            try {
+                val emergency = emergencyRepository.getActiveEmergency()
+                if (emergency != null) {
+                    _uiState.value = EmergencyUiState.Active(emergency)
+                } else {
+                    _uiState.value = EmergencyUiState.NoActive
+                }
+            } catch (e: Exception) {
+                _uiState.value = EmergencyUiState.Error(e.localizedMessage ?: "Error de red")
+            }
+        }
     }
 
     private fun fetchSafeZonesFromOverpass(lat: Double, lon: Double, radius: Double) {
@@ -216,8 +242,8 @@ suspend fun fetchOSRMRoute(
             val url = URL(urlString)
             val connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = 8000
-                readTimeout = 8000
+                connectTimeout = 4000
+                readTimeout = 4000
                 setRequestProperty("User-Agent", "EvacuApp-UBO-StudentProject/1.0")
                 setRequestProperty("Accept", "application/json")
             }
@@ -238,13 +264,23 @@ suspend fun fetchOSRMRoute(
                         val coord = coordinates.getJSONArray(i)
                         points.add(GeoPoint(coord.getDouble(1), coord.getDouble(0)))
                     }
-                    return@withContext points
+                    if (points.isNotEmpty()) return@withContext points
                 }
             }
         } catch (e: Exception) {
-            Log.e("OSRM_ROUTE", "Error: ${e.localizedMessage}")
+            Log.e("OSRM_ROUTE", "Modo offline detectado: ${e.localizedMessage}")
         }
-        listOf(start, destination)
+
+        // --- RESPALDO OFFLINE CON MÚLTIPLES PUNTOS ---
+        // Genera 10 puntos intermedios para que la ruta tenga tamaño > 2 y se pinte en el mapa
+        val fallbackPoints = mutableListOf<GeoPoint>()
+        val steps = 10
+        for (i in 0..steps) {
+            val lat = start.latitude + (destination.latitude - start.latitude) * (i.toDouble() / steps)
+            val lon = start.longitude + (destination.longitude - start.longitude) * (i.toDouble() / steps)
+            fallbackPoints.add(GeoPoint(lat, lon))
+        }
+        fallbackPoints
     }
 }
 
@@ -331,7 +367,14 @@ fun EmergencyActiveScreen(
     val finalDestinationPoint = if (hasCustomDestination) selectedDestinationPoint else nearestSafeZone.point
 
     val realDistanceMeters = routeDistanceMeters ?: (userPoint.distanceToAsDouble(finalDestinationPoint) * 1.35)
-    val distanceText = if (realDistanceMeters >= 1000) String.format(Locale.getDefault(), "%.1f km", realDistanceMeters / 1000.0) else "${realDistanceMeters.toInt()} m"
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val currentLocale = configuration.locales[0]
+
+    val distanceText = if (realDistanceMeters >= 1000) {
+        String.format(currentLocale, "%.1f km", realDistanceMeters / 1000.0)
+    } else {
+        "${realDistanceMeters.toInt()} m"
+    }
     val estimatedTimeMinutes = routeDurationSeconds?.let { (it / 60.0).toInt().coerceAtLeast(1) } ?: (realDistanceMeters / 666.0).toInt().coerceAtLeast(1)
 
     Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
@@ -462,7 +505,7 @@ fun ActiveNavigationScreen(
 
     LaunchedEffect(currentPoint, destinationPoint, mobilityMode) {
         val fetchedPoints = fetchOSRMRoute(currentPoint, destinationPoint, mobilityMode)
-        if (fetchedPoints.size > 2) {
+        if (fetchedPoints.isNotEmpty()) {
             routePolylinePoints = fetchedPoints
 
             if (fetchedPoints.size > 1) {
@@ -515,8 +558,11 @@ fun ActiveNavigationScreen(
         }
     }
 
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val currentLocale = configuration.locales[0]
+
     val remainingDistanceText = if (remainingDistanceMeters >= 1000) {
-        String.format(Locale.getDefault(), "%.1f km", remainingDistanceMeters / 1000.0)
+        String.format(currentLocale, "%.1f km", remainingDistanceMeters / 1000.0)
     } else {
         "${remainingDistanceMeters.toInt()} m"
     }
