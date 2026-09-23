@@ -275,7 +275,23 @@ fun MapScreen() {
             val originCoord = startPoint.toRouteCoordinate()
             val destCoord = targetPoint.toRouteCoordinate()
 
-            // 1. CALCULAR SIEMPRE LAS ALTERNATIVAS MÚLTIPLES DE RUTA (Grafo local / CostModel)
+            // 1. INTENTO ONLINE: OSRM (Ruta real calle por calle en OpenStreetMap)
+            try {
+                val osrmResult = OsrmRoutingService.fetchRealStreetRoute(
+                    start = startPoint,
+                    end = targetPoint,
+                    profile = "Vehículo"
+                )
+                if (osrmResult.points.isNotEmpty()) {
+                    routePoints = osrmResult.points
+                    steps = osrmResult.steps
+                    Log.d("MAP_ROUTE_OSRM", "Ruta OSRM online generada calle por calle (${osrmResult.points.size} puntos)")
+                }
+            } catch (e: Exception) {
+                Log.w("MAP_ROUTE", "Sin internet o fallo OSRM, usando motor de rutas local: ${e.message}")
+            }
+
+            // 2. CALCULO DE ALTERNATIVAS LOCALES (Grafo / CostModel / Opciones)
             try {
                 LocalRouteEngine.initialize(context)
                 val computedAlternatives = LocalRouteEngine.calculateRouteAlternatives(
@@ -285,36 +301,32 @@ fun MapScreen() {
                 )
 
                 if (computedAlternatives.isNotEmpty()) {
-                    alternatives = computedAlternatives
+                    // Si OSRM trajo el trazado real calle por calle, integra esos puntos en la opción Principal
+                    alternatives = if (routePoints.isNotEmpty()) {
+                        computedAlternatives.map { variant ->
+                            if (variant.variant == RouteVariant.PRINCIPAL) {
+                                variant.copy(points = routePoints.map { it.toRouteCoordinate() })
+                            } else {
+                                variant
+                            }
+                        }
+                    } else {
+                        computedAlternatives
+                    }
+
                     val bestVariant = selectedRouteVariant
-                        ?.let { sel -> computedAlternatives.find { it.variant == sel.variant } }
-                        ?: computedAlternatives.firstOrNull { it.variant == RouteVariant.PRINCIPAL }
-                        ?: computedAlternatives.first()
+                        ?.let { sel -> alternatives.find { it.variant == sel.variant } }
+                        ?: alternatives.firstOrNull { it.variant == RouteVariant.PRINCIPAL }
+                        ?: alternatives.first()
 
                     selectedRouteVariant = bestVariant
-                    routePoints = bestVariant.points.map { it.toGeoPoint() }
-                }
-            } catch (e: Exception) {
-                Log.e("MAP_ROUTE_OFFLINE", "Error al calcular alternativas locales: ${e.message}")
-            }
 
-            // 2. INTENTO ONLINE: OSRM con parámetro de dirección (bearing) para pasos e instrucciones
-            try {
-                val currentBearing = UserLocationState.currentBearing
-                val osrmResult = OsrmRoutingService.fetchRealStreetRoute(
-                    start = startPoint,
-                    end = targetPoint,
-                    profile = "Vehiculo",
-                    bearing = currentBearing
-                )
-                if (osrmResult.points.isNotEmpty()) {
-                    steps = osrmResult.steps
                     if (routePoints.isEmpty()) {
-                        routePoints = osrmResult.points
+                        routePoints = bestVariant.points.map { it.toGeoPoint() }
                     }
                 }
             } catch (e: Exception) {
-                Log.w("MAP_ROUTE", "Sin internet para OSRM, usando motor de rutas local")
+                Log.e("MAP_ROUTE_OFFLINE", "Error al calcular alternativas locales: ${e.message}")
             }
 
             // 3. RESPALDO EN LÍNEA INTERMEDIA SI AÚN ESTÁ VACÍA

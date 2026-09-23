@@ -75,14 +75,6 @@ object OsrmRoutingService {
             append("&geometries=geojson")
             append("&steps=true")
             append("&alternatives=false")
-
-            // Incorporar orientación del vehículo (bearing) para respetar sentido de tránsito
-            if (bearing != null && bearing >= 0 && osrmProfile == "driving") {
-                val b = bearing.toInt().coerceIn(0, 359)
-                append("&bearings=")
-                append(b)
-                append(",45;")
-            }
         }
 
         var connection: HttpURLConnection? = null
