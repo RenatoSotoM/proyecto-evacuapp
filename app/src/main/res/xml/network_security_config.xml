@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
+        <!-- Tu IP actual del hotspot -->
+        <domain includeSubdomains="true">10.123.125.204</domain>
+        <!-- IP anterior por si acaso -->
         <domain includeSubdomains="true">192.168.100.12</domain>
+        <!-- Emulador y local -->
         <domain includeSubdomains="true">10.0.2.2</domain>
         <domain includeSubdomains="true">localhost</domain>
     </domain-config>
