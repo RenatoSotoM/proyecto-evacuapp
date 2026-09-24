@@ -291,32 +291,33 @@ fun MapScreen() {
             val originCoord = startPoint.toRouteCoordinate()
             val destCoord = targetPoint.toRouteCoordinate()
 
-            // 1. INTENTO ONLINE: OSRM (Ruta real calle por calle en OpenStreetMap con vector de movimiento)
+            // 1. INTENTO ONLINE: OSRM (Rutas alternativas calle por calle en OpenStreetMap con vector de movimiento)
+            var osrmAlternatives = emptyList<OsrmRouteResponse>()
             try {
                 val currentBearing = UserLocationState.currentBearing
-                val osrmResult = OsrmRoutingService.fetchRealStreetRoute(
+                osrmAlternatives = OsrmRoutingService.fetchRealStreetRouteAlternatives(
                     start = startPoint,
                     end = targetPoint,
                     profile = "Vehículo",
                     bearing = currentBearing,
                     speedMps = currentSpeedMps
                 )
-                if (osrmResult.points.isNotEmpty()) {
-                    // Validar si la ruta de OSRM cruza sobre algún reporte de calle bloqueada
-                    val osrmBlockingIncident = findBlockingIncidentOnRoute(osrmResult.points, sharedIncidents)
+                if (osrmAlternatives.isNotEmpty()) {
+                    val primaryOsrm = osrmAlternatives.first()
+                    val osrmBlockingIncident = findBlockingIncidentOnRoute(primaryOsrm.points, sharedIncidents)
                     if (osrmBlockingIncident == null) {
-                        routePoints = osrmResult.points
-                        steps = osrmResult.steps
-                        Log.d("MAP_ROUTE_OSRM", "Ruta OSRM online generada limpia calle por calle (${osrmResult.points.size} puntos)")
+                        routePoints = primaryOsrm.points
+                        steps = primaryOsrm.steps
+                        Log.d("MAP_ROUTE_OSRM", "Se obtuvieron ${osrmAlternatives.size} alternativas reales de OSRM calle por calle")
                     } else {
-                        Log.w("MAP_ROUTE_OSRM", "Ruta OSRM cruza reporte de calle bloqueada (${osrmBlockingIncident.type.displayName}). Descartando OSRM y usando desvío local de Room.")
+                        Log.w("MAP_ROUTE_OSRM", "Ruta principal OSRM cruza reporte de calle bloqueada (${osrmBlockingIncident.type.displayName}). Descartando OSRM bloqueado.")
                     }
                 }
             } catch (e: Exception) {
                 Log.w("MAP_ROUTE", "Sin internet o fallo OSRM, usando motor de rutas local: ${e.message}")
             }
 
-            // 2. CALCULO DE ALTERNATIVAS LOCALES (Grafo / CostModel / Opciones)
+            // 2. CÁLCULO DE ALTERNATIVAS LOCALES Y ACOPLE DE TRAZADOS DE CALLE REAL
             try {
                 LocalRouteEngine.initialize(context)
                 val computedAlternatives = LocalRouteEngine.calculateRouteAlternatives(
@@ -327,17 +328,13 @@ fun MapScreen() {
                 )
 
                 if (computedAlternatives.isNotEmpty()) {
-                    // Si OSRM trajo el trazado real calle por calle, integra esos puntos en la opción activa
-                    alternatives = if (routePoints.isNotEmpty()) {
-                        computedAlternatives.mapIndexed { idx, variant ->
-                            if (idx == 0 || variant.variant == RouteVariant.SEGURA || variant.variant == RouteVariant.PRINCIPAL) {
-                                variant.copy(points = routePoints.map { it.toRouteCoordinate() })
-                            } else {
-                                variant
-                            }
+                    alternatives = computedAlternatives.mapIndexed { idx, variant ->
+                        val matchingOsrm = osrmAlternatives.getOrNull(idx) ?: osrmAlternatives.firstOrNull()
+                        if (matchingOsrm != null && matchingOsrm.points.isNotEmpty() && findBlockingIncidentOnRoute(matchingOsrm.points, sharedIncidents) == null) {
+                            variant.copy(points = matchingOsrm.points.map { it.toRouteCoordinate() })
+                        } else {
+                            variant
                         }
-                    } else {
-                        computedAlternatives
                     }
 
                     val bestVariant = selectedRouteVariant
@@ -346,10 +343,7 @@ fun MapScreen() {
                         ?: alternatives.first()
 
                     selectedRouteVariant = bestVariant
-
-                    if (routePoints.isEmpty()) {
-                        routePoints = bestVariant.points.map { it.toGeoPoint() }
-                    }
+                    routePoints = bestVariant.points.map { it.toGeoPoint() }
                 }
             } catch (e: Exception) {
                 Log.e("MAP_ROUTE_OFFLINE", "Error al calcular alternativas locales: ${e.message}")

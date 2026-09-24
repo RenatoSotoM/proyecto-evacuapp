@@ -10,7 +10,7 @@ import kotlin.math.ceil
 
 data class StepInstruction(
     val text: String,
-    val modifier: String, // "left", "right", "straight", "uturn", "arrive", etc.
+    val modifier: String,
     val location: GeoPoint,
     val distanceMeters: Double
 )
@@ -27,10 +27,8 @@ object OsrmRoutingService {
 
     fun formatDistance(distanceInMeters: Double): String {
         return if (distanceInMeters >= 1000) {
-            // Si es mayor a 1 km, mostrar en km (ejemplo: 2.5 km)
             String.format(java.util.Locale.US, "%.1f km", distanceInMeters / 1000.0)
         } else {
-            // Si es menor a 1 km, mostrar en metros (ejemplo: 267 m)
             "${distanceInMeters.toInt()} m"
         }
     }
@@ -42,7 +40,18 @@ object OsrmRoutingService {
         bearing: Float? = null,
         speedMps: Double? = null,
         avoidPoints: List<GeoPoint> = emptyList()
-    ): OsrmRouteResponse = withContext(Dispatchers.IO) {
+    ): OsrmRouteResponse {
+        val alternatives = fetchRealStreetRouteAlternatives(start, end, profile, bearing, speedMps)
+        return alternatives.firstOrNull() ?: OsrmRouteResponse(emptyList(), "--", "--")
+    }
+
+    suspend fun fetchRealStreetRouteAlternatives(
+        start: GeoPoint,
+        end: GeoPoint,
+        profile: String = "Vehículo",
+        bearing: Float? = null,
+        speedMps: Double? = null
+    ): List<OsrmRouteResponse> = withContext(Dispatchers.IO) {
 
         val osrmProfile = when (profile.lowercase().trim()) {
             "vehiculo", "vehículo", "auto", "car", "driving" -> "driving"
@@ -61,8 +70,7 @@ object OsrmRoutingService {
         val applyBearings = bearing != null && bearing >= 0 && osrmProfile == "driving" && (speedMps == null || speedMps > 1.0)
 
         fun buildUrl(includeBearings: Boolean): String = buildString {
-            append("https://routing.openstreetmap.de/")
-            append("routed-")
+            append("https://routing.openstreetmap.de/routed-")
             append(serviceName)
             append("/route/v1/")
             append(osrmProfile)
@@ -74,33 +82,23 @@ object OsrmRoutingService {
             append(end.longitude)
             append(",")
             append(end.latitude)
-            append("?overview=full")
-            append("&geometries=geojson")
-            append("&steps=true")
-            append("&alternatives=false")
+            append("?overview=full&geometries=geojson&steps=true&alternatives=true")
 
             if (includeBearings && bearing != null) {
                 val b = bearing.toInt().coerceIn(0, 359)
-                append("&bearings=")
-                append(b)
-                append(",45;")
-                append("&radiuses=15;")
+                append("&bearings=").append(b).append(",45;&radiuses=15;")
             }
         }
 
-        val primaryUrl = buildUrl(applyBearings)
-        var response = executeOsrmQuery(primaryUrl)
-
-        // Si con bearings falla (HTTP 400), reintenta sin bearings como respaldo de seguridad
-        if (response.points.isEmpty() && applyBearings) {
-            val fallbackUrl = buildUrl(false)
-            response = executeOsrmQuery(fallbackUrl)
+        var results = executeOsrmQueryMulti(buildUrl(applyBearings))
+        if (results.isEmpty() && applyBearings) {
+            results = executeOsrmQueryMulti(buildUrl(false))
         }
 
-        response
+        results
     }
 
-    private fun executeOsrmQuery(urlString: String): OsrmRouteResponse {
+    private fun executeOsrmQueryMulti(urlString: String): List<OsrmRouteResponse> {
         var connection: HttpURLConnection? = null
         return try {
             connection = (URL(urlString).openConnection() as HttpURLConnection).apply {
@@ -111,107 +109,81 @@ object OsrmRoutingService {
                 setRequestProperty("Accept", "application/json")
             }
 
-            val responseCode = connection.responseCode
-            if (responseCode !in 200..299) {
-                return OsrmRouteResponse(
-                    points = emptyList(),
-                    distanceText = "--",
-                    durationText = "--",
-                    errorMessage = "OSRM respondió HTTP $responseCode"
-                )
-            }
+            if (connection.responseCode !in 200..299) return emptyList()
 
             val responseText = connection.inputStream.bufferedReader().use { it.readText() }
             val json = JSONObject(responseText)
-            val routes = json.optJSONArray("routes") ?: return OsrmRouteResponse(
-                points = emptyList(),
-                distanceText = "--",
-                durationText = "--",
-                errorMessage = "OSRM no devolvió rutas."
-            )
+            val routesArr = json.optJSONArray("routes") ?: return emptyList()
 
-            if (routes.length() == 0) {
-                return OsrmRouteResponse(
-                    points = emptyList(),
-                    distanceText = "--",
-                    durationText = "--",
-                    errorMessage = "OSRM no devolvió rutas."
-                )
-            }
+            val parsedRoutes = mutableListOf<OsrmRouteResponse>()
+            for (r in 0 until routesArr.length()) {
+                val routeObj = routesArr.getJSONObject(r)
+                val distanceMeters = routeObj.getDouble("distance")
+                val durationSeconds = routeObj.getDouble("duration")
 
-            val primaryRoute = routes.getJSONObject(0)
-            val distanceMeters = primaryRoute.getDouble("distance")
-            val durationSeconds = primaryRoute.getDouble("duration")
-
-            // Geometría completa
-            val coordinates = primaryRoute.getJSONObject("geometry").getJSONArray("coordinates")
-            val points = buildList {
-                for (index in 0 until coordinates.length()) {
-                    val coord = coordinates.getJSONArray(index)
-                    add(GeoPoint(coord.getDouble(1), coord.getDouble(0)))
-                }
-            }
-
-            // Extracción de giros / pasos (Steps)
-            val stepsList = mutableListOf<StepInstruction>()
-            val legs = primaryRoute.optJSONArray("legs")
-            if (legs != null && legs.length() > 0) {
-                val stepsArr = legs.getJSONObject(0).optJSONArray("steps")
-                if (stepsArr != null) {
-                    for (i in 0 until stepsArr.length()) {
-                        val stepObj = stepsArr.getJSONObject(i)
-                        val stepDistance = stepObj.optDouble("distance", 0.0)
-                        val streetName = stepObj.optString("name", "")
-                        val maneuver = stepObj.optJSONObject("maneuver")
-
-                        val type = maneuver?.optString("type", "") ?: ""
-                        var modifier = maneuver?.optString("modifier", "") ?: ""
-                        if (modifier.isEmpty()) modifier = type
-
-                        val locArr = maneuver?.optJSONArray("location")
-                        val stepPoint = if (locArr != null && locArr.length() >= 2) {
-                            GeoPoint(locArr.getDouble(1), locArr.getDouble(0))
-                        } else {
-                            GeoPoint(0.0, 0.0)
-                        }
-
-                        val instructionText = buildInstruction(type, modifier, streetName)
-
-                        stepsList.add(
-                            StepInstruction(
-                                text = instructionText,
-                                modifier = modifier,
-                                location = stepPoint,
-                                distanceMeters = stepDistance
-                            )
-                        )
+                val coordinates = routeObj.getJSONObject("geometry").getJSONArray("coordinates")
+                val points = buildList {
+                    for (index in 0 until coordinates.length()) {
+                        val coord = coordinates.getJSONArray(index)
+                        add(GeoPoint(coord.getDouble(1), coord.getDouble(0)))
                     }
                 }
+
+                val stepsList = mutableListOf<StepInstruction>()
+                val legs = routeObj.optJSONArray("legs")
+                if (legs != null && legs.length() > 0) {
+                    val stepsArr = legs.getJSONObject(0).optJSONArray("steps")
+                    if (stepsArr != null) {
+                        for (i in 0 until stepsArr.length()) {
+                            val stepObj = stepsArr.getJSONObject(i)
+                            val stepDistance = stepObj.optDouble("distance", 0.0)
+                            val streetName = stepObj.optString("name", "")
+                            val maneuver = stepObj.optJSONObject("maneuver")
+
+                            val type = maneuver?.optString("type", "") ?: ""
+                            var modifier = maneuver?.optString("modifier", "") ?: ""
+                            if (modifier.isEmpty()) modifier = type
+
+                            val locArr = maneuver?.optJSONArray("location")
+                            val stepPoint = if (locArr != null && locArr.length() >= 2) {
+                                GeoPoint(locArr.getDouble(1), locArr.getDouble(0))
+                            } else {
+                                GeoPoint(0.0, 0.0)
+                            }
+
+                            val instructionText = buildInstruction(type, modifier, streetName)
+                            stepsList.add(
+                                StepInstruction(
+                                    text = instructionText,
+                                    modifier = modifier,
+                                    location = stepPoint,
+                                    distanceMeters = stepDistance
+                                )
+                            )
+                        }
+                    }
+                }
+
+                val distanceText = formatDistance(distanceMeters)
+                val totalMinutes = ceil(durationSeconds / 60.0).toInt().coerceAtLeast(1)
+                val durationText = if (totalMinutes >= 60) {
+                    "${totalMinutes / 60}h ${totalMinutes % 60} min"
+                } else {
+                    "$totalMinutes min"
+                }
+
+                parsedRoutes.add(
+                    OsrmRouteResponse(
+                        points = points,
+                        distanceText = distanceText,
+                        durationText = durationText,
+                        steps = stepsList
+                    )
+                )
             }
-
-            // CORRECCIÓN 2: Reutilizar formatDistance para mantener uniformidad (metros vs km)
-            val distanceText = formatDistance(distanceMeters)
-
-            val totalMinutes = ceil(durationSeconds / 60.0).toInt().coerceAtLeast(1)
-            val durationText = if (totalMinutes >= 60) {
-                "${totalMinutes / 60}h ${totalMinutes % 60} min"
-            } else {
-                "$totalMinutes min"
-            }
-
-            OsrmRouteResponse(
-                points = points,
-                distanceText = distanceText,
-                durationText = durationText,
-                steps = stepsList
-            )
-        } catch (exception: Exception) {
-            OsrmRouteResponse(
-                points = emptyList(),
-                distanceText = "--",
-                durationText = "--",
-                errorMessage = exception.message
-            )
+            parsedRoutes
+        } catch (e: Exception) {
+            emptyList()
         } finally {
             connection?.disconnect()
         }
@@ -229,15 +201,11 @@ object OsrmRoutingService {
                 "uturn" -> "Gira en U $street".trim()
                 else -> "Gira $street".trim()
             }
-
             "new name", "continue" -> "Sigue recto $street".trim()
             "roundabout", "rotary" -> "En la rotonda toma la salida $street".trim()
             else -> "Continúa $street".trim()
         }
     }
-
-
-// ... al final de OsrmRoutingService.kt ...
 
     suspend fun fetchRealStreetRouteWithAvoidance(
         start: GeoPoint,

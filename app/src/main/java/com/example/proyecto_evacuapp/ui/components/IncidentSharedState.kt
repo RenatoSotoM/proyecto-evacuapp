@@ -21,6 +21,9 @@ object IncidentSharedState {
     val incidents: List<SharedIncident>
         get() = incidentList
 
+    var isClearedForTesting = false
+        private set
+
     private var initialized = false
     private lateinit var incidentDao: IncidentDao
 
@@ -32,19 +35,42 @@ object IncidentSharedState {
 
         scope.launch {
             incidentDao.observeAll().collectLatest { entities ->
-                val restoredIncidents = entities.map { entity ->
-                    entity.toSharedIncident()
-                }
+                if (!isClearedForTesting) {
+                    val restoredIncidents = entities.map { entity ->
+                        entity.toSharedIncident()
+                    }
 
-                withContext(Dispatchers.Main.immediate) {
-                    incidentList.clear()
-                    incidentList.addAll(restoredIncidents)
+                    withContext(Dispatchers.Main.immediate) {
+                        incidentList.clear()
+                        incidentList.addAll(restoredIncidents)
+                    }
                 }
             }
         }
     }
 
+    /**
+     * Limpia TODOS los reportes e incidentes locales de la memoria y la base de datos Room,
+     * dejando la lista totalmente en 0 para poder probar la creación de reportes uno por uno.
+     */
+    fun clearAllIncidents(context: Context) {
+        isClearedForTesting = true
+        scope.launch(Dispatchers.Main.immediate) {
+            incidentList.clear()
+        }
+        scope.launch(Dispatchers.IO) {
+            if (::incidentDao.isInitialized) {
+                incidentDao.deleteAllIncidents()
+            } else {
+                val db = EvacuAppDatabase.getInstance(context)
+                db.incidentDao().deleteAllIncidents()
+            }
+        }
+    }
+
     fun syncRemoteIncidents(remoteList: List<IncidentResponseDto>) {
+        if (isClearedForTesting) return // No re-inserta datos remotos si el usuario presionó Limpiar (0)
+
         scope.launch {
             withContext(Dispatchers.Main.immediate) {
                 remoteList.forEach { dto ->
@@ -128,6 +154,7 @@ object IncidentSharedState {
     }
 
     fun addLocalIncident(incident: SharedIncident) {
+        isClearedForTesting = false // Se restablece el flag al crear manualmente un nuevo reporte para que este persista
         val localIncident = incident.copy(
             status = IncidentStatus.LOCAL_PENDING,
             updatedAtMillis = System.currentTimeMillis()
@@ -229,24 +256,6 @@ object IncidentSharedState {
 
     fun triggerSync(context: Context) {
         IncidentSyncService.scheduleSync(context)
-    }
-
-    /**
-     * Limpia TODOS los reportes e incidentes locales de la memoria y la base de datos Room,
-     * dejando la lista totalmente en 0 para poder probar la creación de reportes uno por uno.
-     */
-    fun clearAllIncidents(context: Context) {
-        scope.launch(Dispatchers.Main.immediate) {
-            incidentList.clear()
-        }
-        scope.launch(Dispatchers.IO) {
-            if (::incidentDao.isInitialized) {
-                incidentDao.deleteAllIncidents()
-            } else {
-                val db = EvacuAppDatabase.getInstance(context)
-                db.incidentDao().deleteAllIncidents()
-            }
-        }
     }
 }
 
