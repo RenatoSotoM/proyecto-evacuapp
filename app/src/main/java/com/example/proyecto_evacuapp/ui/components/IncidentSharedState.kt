@@ -230,6 +230,24 @@ object IncidentSharedState {
     fun triggerSync(context: Context) {
         IncidentSyncService.scheduleSync(context)
     }
+
+    /**
+     * Limpia TODOS los reportes e incidentes locales de la memoria y la base de datos Room,
+     * dejando la lista totalmente en 0 para poder probar la creación de reportes uno por uno.
+     */
+    fun clearAllIncidents(context: Context) {
+        scope.launch(Dispatchers.Main.immediate) {
+            incidentList.clear()
+        }
+        scope.launch(Dispatchers.IO) {
+            if (::incidentDao.isInitialized) {
+                incidentDao.deleteAllIncidents()
+            } else {
+                val db = EvacuAppDatabase.getInstance(context)
+                db.incidentDao().deleteAllIncidents()
+            }
+        }
+    }
 }
 
 private fun SharedIncident.toEntity(): IncidentEntity {

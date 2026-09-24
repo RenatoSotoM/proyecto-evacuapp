@@ -2,7 +2,6 @@ package com.example.proyecto_evacuapp.domain.engine
 
 import android.content.Context
 import android.util.Log
-import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
 import com.example.proyecto_evacuapp.ui.components.IncidentEntity
 import com.example.proyecto_evacuapp.ui.components.IncidentSeverity
 import com.example.proyecto_evacuapp.ui.components.LocalRouteResult
@@ -15,7 +14,9 @@ import kotlin.math.roundToInt
 private const val TAG = "LocalRouteEngine"
 
 /**
- * Motor de ruteo local offline-first[cite: 5].
+ * Motor de ruteo local offline-first.
+ * Aplica restricciones duras (Hard Constraints) de bloqueo para todas las variantes de ruta
+ * y garantiza la generación de las 4 opciones seleccionables (Ruta Segura, Ruta Alternativa 1, Ruta Alternativa 2, Ruta Offline).
  */
 object LocalRouteEngine {
 
@@ -43,19 +44,26 @@ object LocalRouteEngine {
         blockedSegmentIds: Set<String> = emptySet()
     ): LocalRouteResult {
         val alternatives = calculateRouteAlternatives(origin, destination, profile, blockedSegmentIds)
-        return alternatives.firstOrNull { it.variant == RouteVariant.PRINCIPAL }
+        return alternatives.firstOrNull { it.variant == RouteVariant.SEGURA }
             ?: alternatives.firstOrNull()
             ?: emptyRouteResult(origin, destination)
     }
 
+    /**
+     * Calcula las 4 opciones obligatorias dentro del radio de búsqueda:
+     * 1. Ruta Segura (SEGURA): Dijkstra evitando 100% riesgos y bloqueos (Restricción Dura HARD_BLOCK_COST).
+     * 2. Ruta Alternativa 1 (ALTERNATIVA_1): Aplica penalización de +10000.0m a las aristas de Ruta Segura.
+     * 3. Ruta Alternativa 2 (ALTERNATIVA_2): Aplica penalización a las aristas de Ruta Segura y Ruta Alternativa 1.
+     * 4. Ruta Offline (OFFLINE): Calculada puramente usando el grafo local en Room DB / memoria.
+     */
     suspend fun calculateRouteAlternatives(
         origin: RouteCoordinate,
         destination: RouteCoordinate,
         profile: RouteMobilityProfile,
-        blockedSegmentIds: Set<String> = emptySet()
+        blockedSegmentIds: Set<String> = emptySet(),
+        startBearing: Float? = null
     ): List<LocalRouteResult> {
         val repo = requireRepository()
-        // Llamada correcta al repositorio dinámico con origen y destino
         repo.ensureLoadedForRoute(origin, destination)
         val graph = repo.graphSnapshot()
 
@@ -72,63 +80,96 @@ object LocalRouteEngine {
         }
 
         val sessionPenalties = blockedSegmentIds.associateWith { HARD_BLOCK_COST }
-        val avoidInaccessibleHard = profile == RouteMobilityProfile.REDUCED_MOBILITY
 
-        val principalWeights = CostProfiles.weightsFor(profile)
-        val principal = graph.shortestPath(
-            startNodeId = startNode.id,
-            endNodeId = endNode.id,
-            weights = principalWeights,
-            profile = profile,
-            edgePenalties = sessionPenalties
-        )
-
-        var segura = graph.shortestPath(
+        // 1. RUTA 1: RUTA SEGURA (100% libre de riesgos y bloqueos con restricción dura C(e) = infinity)
+        val segura = graph.shortestPath(
             startNodeId = startNode.id,
             endNodeId = endNode.id,
             weights = CostProfiles.SAFE_WEIGHTS,
             profile = profile,
             avoidVerifiedRisk = true,
-            edgePenalties = sessionPenalties
+            edgePenalties = sessionPenalties,
+            startBearing = startBearing
         )
-        if (segura != null && principal != null && segura.edgeIds == principal.edgeIds) {
-            val diversityPenalties = sessionPenalties + principal.edgeIds.associateWith { 5_000.0 }
-            segura = graph.shortestPath(
-                startNodeId = startNode.id,
-                endNodeId = endNode.id,
-                weights = CostProfiles.SAFE_WEIGHTS,
-                profile = profile,
-                avoidVerifiedRisk = true,
-                edgePenalties = diversityPenalties
-            ) ?: segura
+
+        // 2. RUTA 2: RUTA ALTERNATIVA 1 (Penaliza +10000.0m las aristas de Ruta Segura)
+        val seguraEdgePenalties = sessionPenalties + (segura?.edgeIds?.associateWith { 10_000.0 } ?: emptyMap())
+        var alt1 = graph.shortestPath(
+            startNodeId = startNode.id,
+            endNodeId = endNode.id,
+            weights = CostProfiles.weightsFor(profile),
+            profile = profile,
+            avoidVerifiedRisk = true,
+            edgePenalties = seguraEdgePenalties,
+            startBearing = startBearing
+        )
+        if (alt1 == null || (segura != null && alt1.edgeIds == segura.edgeIds)) {
+            alt1 = segura
         }
 
-        var accesible = graph.shortestPath(
+        // 3. RUTA 3: RUTA ALTERNATIVA 2 (Penaliza aristas de Ruta Segura y Ruta Alternativa 1)
+        val alt2Penalties = sessionPenalties +
+                (segura?.edgeIds?.associateWith { 10_000.0 } ?: emptyMap()) +
+                (alt1?.edgeIds?.associateWith { 10_000.0 } ?: emptyMap())
+        var alt2 = graph.shortestPath(
+            startNodeId = startNode.id,
+            endNodeId = endNode.id,
+            weights = CostProfiles.weightsFor(profile),
+            profile = profile,
+            avoidVerifiedRisk = true,
+            edgePenalties = alt2Penalties,
+            startBearing = startBearing
+        )
+        if (alt2 == null || (segura != null && alt2.edgeIds == segura.edgeIds)) {
+            alt2 = alt1 ?: segura
+        }
+
+        // 4. RUTA 4: RUTA OFFLINE (LOCAL) (Generada estrictamente usando el grafo local Room DB / memoria)
+        val offline = graph.shortestPath(
             startNodeId = startNode.id,
             endNodeId = endNode.id,
             weights = CostProfiles.ACCESSIBLE_WEIGHTS,
             profile = profile,
-            avoidInaccessible = avoidInaccessibleHard,
-            edgePenalties = sessionPenalties
-        )
-        if (accesible != null && principal != null && accesible.edgeIds == principal.edgeIds) {
-            val diversityPenalties = sessionPenalties + principal.edgeIds.associateWith { 5_000.0 }
-            accesible = graph.shortestPath(
-                startNodeId = startNode.id,
-                endNodeId = endNode.id,
-                weights = CostProfiles.ACCESSIBLE_WEIGHTS,
-                profile = profile,
-                avoidInaccessible = avoidInaccessibleHard,
-                edgePenalties = diversityPenalties
-            ) ?: accesible
-        }
+            avoidVerifiedRisk = true,
+            edgePenalties = sessionPenalties,
+            startBearing = startBearing
+        ) ?: alt2 ?: alt1 ?: segura
 
         val results = mutableListOf<LocalRouteResult>()
-        principal?.let { results += it.toRouteResult(RouteVariant.PRINCIPAL, "Ruta Rápida", blockedSegmentIds) }
-        segura?.let { results += it.toRouteResult(RouteVariant.SEGURA, "Ruta Segura", blockedSegmentIds) }
-        accesible?.let { results += it.toRouteResult(RouteVariant.ACCESIBLE, "Ruta Accesible", blockedSegmentIds) }
 
-        val distinctResults = results.distinctBy { it.points }
+        segura?.let {
+            results += it.toRouteResult(
+                variant = RouteVariant.SEGURA,
+                label = "Ruta Segura",
+                sessionBlocks = blockedSegmentIds
+            )
+        }
+
+        alt1?.let {
+            results += it.toRouteResult(
+                variant = RouteVariant.ALTERNATIVA_1,
+                label = "Ruta Alternativa 1",
+                sessionBlocks = blockedSegmentIds
+            )
+        }
+
+        alt2?.let {
+            results += it.toRouteResult(
+                variant = RouteVariant.ALTERNATIVA_2,
+                label = "Ruta Alternativa 2",
+                sessionBlocks = blockedSegmentIds
+            )
+        }
+
+        offline?.let {
+            results += it.toRouteResult(
+                variant = RouteVariant.OFFLINE,
+                label = "Ruta Offline (Local)",
+                sessionBlocks = blockedSegmentIds
+            )
+        }
+
+        val distinctResults = results.distinctBy { it.variant }
         val count = distinctResults.size
 
         if (count == 0) {
@@ -138,8 +179,8 @@ object LocalRouteEngine {
             return listOf(isolatedResult)
         }
 
-        val statusMessage = if (count < 3) {
-            "⚠️ Se encontraron $count rutas disponibles. No hay más alternativas físicamente distintas en esta zona."
+        val statusMessage = if (count < 4) {
+            "⚠️ Se encontraron $count opciones de ruta disponibles en esta zona."
         } else {
             null
         }
@@ -176,7 +217,7 @@ object LocalRouteEngine {
         durationSeconds = 0.0,
         engineName = "Local road graph (offline)",
         warnings = listOf("No fue posible calcular una ruta sobre el grafo local."),
-        variant = RouteVariant.PRINCIPAL,
+        variant = RouteVariant.SEGURA,
         label = "Ruta no disponible"
     )
 

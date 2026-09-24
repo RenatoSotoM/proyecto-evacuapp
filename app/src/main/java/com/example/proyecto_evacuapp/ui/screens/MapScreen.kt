@@ -302,9 +302,15 @@ fun MapScreen() {
                     speedMps = currentSpeedMps
                 )
                 if (osrmResult.points.isNotEmpty()) {
-                    routePoints = osrmResult.points
-                    steps = osrmResult.steps
-                    Log.d("MAP_ROUTE_OSRM", "Ruta OSRM online generada calle por calle (${osrmResult.points.size} puntos)")
+                    // Validar si la ruta de OSRM cruza sobre algún reporte de calle bloqueada
+                    val osrmBlockingIncident = findBlockingIncidentOnRoute(osrmResult.points, sharedIncidents)
+                    if (osrmBlockingIncident == null) {
+                        routePoints = osrmResult.points
+                        steps = osrmResult.steps
+                        Log.d("MAP_ROUTE_OSRM", "Ruta OSRM online generada limpia calle por calle (${osrmResult.points.size} puntos)")
+                    } else {
+                        Log.w("MAP_ROUTE_OSRM", "Ruta OSRM cruza reporte de calle bloqueada (${osrmBlockingIncident.type.displayName}). Descartando OSRM y usando desvío local de Room.")
+                    }
                 }
             } catch (e: Exception) {
                 Log.w("MAP_ROUTE", "Sin internet o fallo OSRM, usando motor de rutas local: ${e.message}")
@@ -316,14 +322,15 @@ fun MapScreen() {
                 val computedAlternatives = LocalRouteEngine.calculateRouteAlternatives(
                     origin = originCoord,
                     destination = destCoord,
-                    profile = RouteMobilityProfile.VEHICLE
+                    profile = RouteMobilityProfile.VEHICLE,
+                    startBearing = UserLocationState.currentBearing
                 )
 
                 if (computedAlternatives.isNotEmpty()) {
-                    // Si OSRM trajo el trazado real calle por calle, integra esos puntos en la opción Principal
+                    // Si OSRM trajo el trazado real calle por calle, integra esos puntos en la opción activa
                     alternatives = if (routePoints.isNotEmpty()) {
-                        computedAlternatives.map { variant ->
-                            if (variant.variant == RouteVariant.PRINCIPAL) {
+                        computedAlternatives.mapIndexed { idx, variant ->
+                            if (idx == 0 || variant.variant == RouteVariant.SEGURA || variant.variant == RouteVariant.PRINCIPAL) {
                                 variant.copy(points = routePoints.map { it.toRouteCoordinate() })
                             } else {
                                 variant
@@ -335,7 +342,7 @@ fun MapScreen() {
 
                     val bestVariant = selectedRouteVariant
                         ?.let { sel -> alternatives.find { it.variant == sel.variant } }
-                        ?: alternatives.firstOrNull { it.variant == RouteVariant.PRINCIPAL }
+                        ?: alternatives.firstOrNull { it.variant == RouteVariant.SEGURA }
                         ?: alternatives.first()
 
                     selectedRouteVariant = bestVariant
@@ -365,6 +372,7 @@ fun MapScreen() {
                 customRoutePoints = routePoints
                 routeAlternatives = alternatives
                 routeSteps = steps
+                currentStepIndex = 0 // Reseteo obligatorio de maniobra al recalcular
                 isAutomaticEvacuation = automatic
             } else {
                 if (!isRerouting) Toast.makeText(context, "No se pudo generar la ruta", Toast.LENGTH_SHORT).show()
@@ -526,32 +534,50 @@ fun MapScreen() {
                         )
                     }
 
-                    // 3. GUÍA VOCAL Y ASISTENCIA HÁPTICA DE PASOS DE NAVEGACIÓN
+                    // 3. GUÍA VOCAL, NOTIFICACIÓN Y ASISTENCIA HÁPTICA DE PASOS DE NAVEGACIÓN
                     if (isNavigating && routeSteps.isNotEmpty() && currentStepIndex < routeSteps.size) {
                         val currentStep = routeSteps[currentStepIndex]
                         val distanceToStep = newGeoPoint.distanceToAsDouble(currentStep.location)
                         distanceToNextStepMeters = distanceToStep.toInt()
 
-                        val speedKmH = currentSpeedMps * 3.6
+                        val speedKmH = (currentSpeedMps * 3.6).toInt()
+
+                        // Actualización constante de la notificación persistente en el Foreground Service
+                        com.example.proyecto_evacuapp.services.NavigationForegroundService.updateNavigationProgress(
+                            context = context,
+                            speedKmH = speedKmH,
+                            nextInstruction = currentStep.text,
+                            distanceMeters = distanceToNextStepMeters
+                        )
+
                         val triggerDistanceMeters = when {
-                            speedKmH >= 60.0 -> currentSpeedMps * 15.0
-                            speedKmH >= 30.0 -> currentSpeedMps * 12.0
+                            speedKmH >= 60 -> currentSpeedMps * 15.0
+                            speedKmH >= 30 -> currentSpeedMps * 12.0
                             else -> 30.0
                         }
 
                         if (distanceToStep <= triggerDistanceMeters) {
-                            val modifier = currentStep.modifier.lowercase()
-                            when {
-                                modifier.contains("right") -> com.example.proyecto_evacuapp.utils.AdaptiveAssistant.notifyTurnRight(context)
-                                modifier.contains("left") -> com.example.proyecto_evacuapp.utils.AdaptiveAssistant.notifyTurnLeft(context)
-                                else -> {
+                            val isArriveStep = currentStep.modifier.lowercase().contains("arrive") || currentStepIndex == routeSteps.size - 1
+
+                            // La instrucción de llegada SOLO se activa si la distancia real al destino es < 15 metros
+                            if (isArriveStep) {
+                                val distToDest = customDestination?.let { newGeoPoint.distanceToAsDouble(it) } ?: distanceToStep
+                                if (distToDest <= 15.0) {
                                     val audioRes = CustomVoicePlayer.getAudioForStep(currentStep.modifier)
                                     CustomVoicePlayer.playAudio(context, audioRes)
+                                    if (currentStepIndex < routeSteps.size - 1) currentStepIndex++
                                 }
-                            }
-
-                            if (currentStepIndex < routeSteps.size - 1) {
-                                currentStepIndex++
+                            } else {
+                                val modifier = currentStep.modifier.lowercase()
+                                when {
+                                    modifier.contains("right") -> com.example.proyecto_evacuapp.utils.AdaptiveAssistant.notifyTurnRight(context)
+                                    modifier.contains("left") -> com.example.proyecto_evacuapp.utils.AdaptiveAssistant.notifyTurnLeft(context)
+                                    else -> {
+                                        val audioRes = CustomVoicePlayer.getAudioForStep(currentStep.modifier)
+                                        CustomVoicePlayer.playAudio(context, audioRes)
+                                    }
+                                }
+                                if (currentStepIndex < routeSteps.size - 1) currentStepIndex++
                             }
                         }
                     }

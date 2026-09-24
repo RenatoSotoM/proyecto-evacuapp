@@ -116,6 +116,31 @@ class RoadGraph {
     }
 
     /**
+     * Retorna TODAS las aristas/segmentos situados dentro de un radio de seguridad (buffer) de 15-20 metros
+     * alrededor de las coordenadas de un reporte. Garantiza que reportes cerca de esquinas e intersecciones
+     * bloqueen todos los accesos inmediatos a ese tramo vial.
+     */
+    fun edgesWithinRadius(point: RouteCoordinate, radiusMeters: Double = 20.0): List<GraphEdge> {
+        val matchingEdges = mutableListOf<GraphEdge>()
+        for (edge in edges.values) {
+            val from = nodes[edge.fromId]?.coordinate ?: continue
+            val to = nodes[edge.toId]?.coordinate ?: continue
+
+            val distToSegment = distancePointToSegmentMeters(point, from, to)
+            val distToFromNode = haversineMeters(point, from)
+            val distToToNode = haversineMeters(point, to)
+
+            if (distToSegment <= radiusMeters || distToFromNode <= radiusMeters || distToToNode <= radiusMeters) {
+                matchingEdges.add(edge)
+            }
+        }
+
+        return matchingEdges.ifEmpty {
+            listOfNotNull(nearestEdge(point, maxDistanceMeters = 60.0))
+        }
+    }
+
+    /**
      * Map Snapping Avanzado: Enganche por vector de movimiento (bearing), velocidad y tipo de vía (Autopista vs Caletera vs Local)
      */
     fun nearestMatchingEdge(
@@ -191,7 +216,8 @@ class RoadGraph {
         profile: RouteMobilityProfile,
         avoidVerifiedRisk: Boolean = false,
         avoidInaccessible: Boolean = false,
-        edgePenalties: Map<String, Double> = emptyMap()
+        edgePenalties: Map<String, Double> = emptyMap(),
+        startBearing: Float? = null
     ): PathResult? {
         if (!nodes.containsKey(startNodeId) || !nodes.containsKey(endNodeId)) return null
         if (startNodeId == endNodeId) return null
@@ -225,8 +251,40 @@ class RoadGraph {
                 val neighborId = if (edge.fromId == currentId) edge.toId else edge.fromId
                 if (neighborId in visited) continue
 
-                val penalty = edgePenalties[edgeId] ?: 0.0
-                val cost = edgeCost(edge, weights, profile, avoidVerifiedRisk, avoidInaccessible, penalty)
+                var extraPenalty = edgePenalties[edgeId] ?: 0.0
+
+                // Penalización Angular Dinámica (Permitir retorno si el frente está bloqueado):
+                if (currentId == startNodeId && startBearing != null && startBearing >= 0) {
+                    val fromCoord = nodes[edge.fromId]?.coordinate
+                    val toCoord = nodes[edge.toId]?.coordinate
+                    if (fromCoord != null && toCoord != null) {
+                        val edgeAzimuth = calculateAzimuthDegrees(fromCoord, toCoord)
+                        val angleDiff = angularDifferenceDegrees(startBearing.toDouble(), edgeAzimuth)
+
+                        if (angleDiff > 90.0) {
+                            // Verifica si existe alguna vía saliente directa (<= 90°) que esté abierta (sin bloqueo)
+                            val hasOpenForwardEdge = outgoingEdgeIds.any { id ->
+                                val e = edges[id] ?: return@any false
+                                if (e.isBlocked) return@any false
+                                val fc = nodes[e.fromId]?.coordinate ?: return@any false
+                                val tc = nodes[e.toId]?.coordinate ?: return@any false
+                                val az = calculateAzimuthDegrees(fc, tc)
+                                val diff = angularDifferenceDegrees(startBearing.toDouble(), az)
+                                diff <= 90.0 && edgeCost(e, weights, profile, avoidVerifiedRisk, avoidInaccessible, 0.0) < HARD_BLOCK_COST
+                            }
+
+                            if (hasOpenForwardEdge) {
+                                // Vía directa despejada: Mantiene penalización de U-turn (+5000m) para evitar bucles
+                                extraPenalty += 5000.0
+                            } else {
+                                // Vía directa bloqueada por reporte: ANULA la penalización (extraPenalty = 0) para ordenar dar la vuelta
+                                extraPenalty += 0.0
+                            }
+                        }
+                    }
+                }
+
+                val cost = edgeCost(edge, weights, profile, avoidVerifiedRisk, avoidInaccessible, extraPenalty)
                 if (cost >= HARD_BLOCK_COST) continue
 
                 val candidateDist = currentDist + cost

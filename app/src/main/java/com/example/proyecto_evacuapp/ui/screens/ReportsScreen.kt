@@ -132,17 +132,39 @@ fun ReportsScreen() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text(
-            text = "Reportar incidente",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = TextPrimary
-        )
-        Text(
-            text = "Informa bloqueos o peligros cercanos. El reporte se guarda primero en el dispositivo y se sincronizará cuando exista conexión.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = TextSecondary
-        )
+        val context = androidx.compose.ui.platform.LocalContext.current
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Reportar incidente",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+                Text(
+                    text = "Informa bloqueos o peligros cercanos. Se guarda localmente y se sincroniza al conectar.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+            }
+            if (reports.isNotEmpty()) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        IncidentSharedState.clearAllIncidents(context)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Limpiar (0)", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
 
         OfflineReportInfoCard(
             pendingCount = reports.count {

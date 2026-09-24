@@ -174,6 +174,9 @@ class RoadNetworkRepository {
             return explicitIds.mapNotNull { graph.edgeById(it) }
         }
         val point = RouteCoordinate(incident.latitude, incident.longitude)
-        return listOfNotNull(graph.nearestMatchingEdge(point, maxDistanceMeters = MAX_MATCH_DISTANCE_METERS))
+        // Buffer de bloqueo de 20 metros para cubrir esquinas e intersecciones asociadas al reporte
+        val affectedInRadius = graph.edgesWithinRadius(point, radiusMeters = 20.0)
+        Log.d(TAG, "Reporte ${incident.localId} en (${incident.latitude}, ${incident.longitude}) bloqueó ${affectedInRadius.size} aristas en radio de 20m")
+        return affectedInRadius
     }
 }

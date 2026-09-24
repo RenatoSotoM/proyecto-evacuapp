@@ -12,9 +12,10 @@ private const val ALTERNATE_ALPHA = 150 // 0-255
 private const val COLOR_PRINCIPAL = "#1565D8" // EvacuBlue
 private const val COLOR_SEGURA = "#2E7D32"    // SafeGreen
 private const val COLOR_ACCESIBLE = "#B45309" // WarningAmber (tono oscuro)
+private const val COLOR_ALT2 = "#7C3AED"      // Púrpura elegante
 
 /**
- * Construye los overlays de mapa para el set de rutas alternativas calculado por RouteManager.
+ * Construye los overlays de mapa para el set de rutas alternativas calculado por RouteManager / LocalRouteEngine.
  * La ruta seleccionada se pinta sólida y gruesa; el resto queda punteado, delgado y
  * semitransparente. Las alternativas se agregan primero para que la seleccionada quede
  * siempre visualmente "encima" al añadirse al MapView.
@@ -53,9 +54,10 @@ object RoutePolylineFactory {
         }
 
         val baseColorHex = when (variant) {
-            RouteVariant.PRINCIPAL -> COLOR_PRINCIPAL
             RouteVariant.SEGURA -> COLOR_SEGURA
-            RouteVariant.ACCESIBLE -> COLOR_ACCESIBLE
+            RouteVariant.ALTERNATIVA_1, RouteVariant.PRINCIPAL -> COLOR_PRINCIPAL
+            RouteVariant.ALTERNATIVA_2 -> COLOR_ALT2
+            RouteVariant.OFFLINE, RouteVariant.ACCESIBLE -> COLOR_ACCESIBLE
         }
         val color = AndroidColor.parseColor(baseColorHex)
 

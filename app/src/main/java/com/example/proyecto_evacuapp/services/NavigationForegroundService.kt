@@ -38,6 +38,40 @@ class NavigationForegroundService : Service() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
 
+    companion object {
+        const val ACTION_UPDATE_PROGRESS = "com.example.proyecto_evacuapp.ACTION_UPDATE_PROGRESS"
+        const val EXTRA_SPEED_KMH = "extra_speed_kmh"
+        const val EXTRA_INSTRUCTION = "extra_instruction"
+        const val EXTRA_DISTANCE_METERS = "extra_distance_meters"
+
+        /**
+         * Método estático público para actualizar dinámicamente la notificación persistente
+         * desde MapScreen o NavigationViewModel en tiempo real sin sonidos repetitivos.
+         */
+        fun updateNavigationProgress(
+            context: Context,
+            speedKmH: Int,
+            nextInstruction: String,
+            distanceMeters: Int
+        ) {
+            val intent = Intent(context, NavigationForegroundService::class.java).apply {
+                action = ACTION_UPDATE_PROGRESS
+                putExtra(EXTRA_SPEED_KMH, speedKmH)
+                putExtra(EXTRA_INSTRUCTION, nextInstruction)
+                putExtra(EXTRA_DISTANCE_METERS, distanceMeters)
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error al actualizar la notificación de navegación: ${e.message}")
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
@@ -45,6 +79,21 @@ class NavigationForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_UPDATE_PROGRESS) {
+            val speed = intent.getIntExtra(EXTRA_SPEED_KMH, 0)
+            val instruction = intent.getStringExtra(EXTRA_INSTRUCTION) ?: "En ruta"
+            val distMeters = intent.getIntExtra(EXTRA_DISTANCE_METERS, 0)
+
+            val title = "Navegando ($speed km/h)"
+            val bodyText = if (distMeters > 0) {
+                "En $distMeters m: $instruction"
+            } else {
+                instruction
+            }
+            updateNotification(title, bodyText)
+            return START_STICKY
+        }
+
         val notification = buildNotification("Navegación EvacuApp Activa", "Iniciando guía GPS...")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -75,7 +124,8 @@ class NavigationForegroundService : Service() {
                     UserLocationState.currentSpeedMps = speedMps
                     UserLocationState.currentBearing = bearing
 
-                    evaluateTurnAlertsAndNotification(speedMps)
+                    val speedKmH = (speedMps * 3.6).toInt()
+                    evaluateTurnAlertsAndNotification(speedKmH)
                 }
             }
         }
@@ -88,15 +138,14 @@ class NavigationForegroundService : Service() {
         }
     }
 
-    private fun evaluateTurnAlertsAndNotification(speedMps: Double) {
-        val speedKmH = speedMps * 3.6
+    private fun evaluateTurnAlertsAndNotification(speedKmH: Int) {
         val warningDistanceMeters = when {
-            speedKmH > 60.0 -> 220
-            speedKmH >= 30.0 -> 90
+            speedKmH > 60 -> 220
+            speedKmH >= 30 -> 90
             else -> 45
         }
 
-        val notifTitle = "Navegando (${speedKmH.toInt()} km/h)"
+        val notifTitle = "Navegando ($speedKmH km/h)"
         val notifText = "Aviso de giro anticipado a $warningDistanceMeters m | GPS Activo"
         updateNotification(notifTitle, notifText)
     }
@@ -128,6 +177,7 @@ class NavigationForegroundService : Service() {
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }

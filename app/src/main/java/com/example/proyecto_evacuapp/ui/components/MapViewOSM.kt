@@ -266,9 +266,10 @@ fun MapViewOSM(
         mapView.invalidate()
     }
 
-    // Actualizar Rutas (Principal y Alternativas) y Destino
+    // Actualizar Rutas (Principal y Alternativas) y Destino con limpieza total e Invalidate
     LaunchedEffect(destinationPoint, routePoints, routeAlternatives, selectedRouteVariant) {
         routePolylinesOverlay.items.clear()
+        routePolyline.setPoints(emptyList())
 
         if (routeAlternatives.isNotEmpty()) {
             routePolyline.setVisible(false)
