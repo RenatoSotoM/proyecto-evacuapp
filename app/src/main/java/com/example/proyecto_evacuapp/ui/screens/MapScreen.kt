@@ -28,6 +28,7 @@ import com.example.proyecto_evacuapp.data.remote.PointOfInterestResponse
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.data.remote.SafeZoneNearbyDto
 import com.example.proyecto_evacuapp.data.repository.IncidentRepository
+import com.example.proyecto_evacuapp.domain.RouteManager
 import com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine
 import com.example.proyecto_evacuapp.ui.components.*
 import com.example.proyecto_evacuapp.ui.theme.*
@@ -132,6 +133,7 @@ fun MapScreen() {
     }
 
     // ESTADOS PARA RUTA, VARIANTES Y NAVEGACIÓN ACTIVA
+    val routeManager = remember { RouteManager(coroutineScope) }
     var customDestination by remember { mutableStateOf<GeoPoint?>(null) }
     var customDestinationName by remember { mutableStateOf("") }
     var customRoutePoints by remember { mutableStateOf<List<GeoPoint>>(emptyList()) }
@@ -158,6 +160,20 @@ fun MapScreen() {
 
     var isNavigating by remember { mutableStateOf(false) }
     var currentStepIndex by remember { mutableIntStateOf(0) }
+
+    // GESTIÓN DEL SERVICIO EN PRIMER PLANO DE NAVEGACIÓN GPS (NavigationForegroundService)
+    LaunchedEffect(isNavigating) {
+        if (isNavigating) {
+            val serviceIntent = android.content.Intent(context, com.example.proyecto_evacuapp.services.NavigationForegroundService::class.java)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent)
+            } else {
+                context.startService(serviceIntent)
+            }
+        } else {
+            context.stopService(android.content.Intent(context, com.example.proyecto_evacuapp.services.NavigationForegroundService::class.java))
+        }
+    }
 
     // CARGAR INCIDENTES DE LA API Y SINCRONIZAR CON EL ESTADO COMPARTIDO
     LaunchedEffect(currentLatitude, currentLongitude) {
@@ -275,12 +291,15 @@ fun MapScreen() {
             val originCoord = startPoint.toRouteCoordinate()
             val destCoord = targetPoint.toRouteCoordinate()
 
-            // 1. INTENTO ONLINE: OSRM (Ruta real calle por calle en OpenStreetMap)
+            // 1. INTENTO ONLINE: OSRM (Ruta real calle por calle en OpenStreetMap con vector de movimiento)
             try {
+                val currentBearing = UserLocationState.currentBearing
                 val osrmResult = OsrmRoutingService.fetchRealStreetRoute(
                     start = startPoint,
                     end = targetPoint,
-                    profile = "Vehículo"
+                    profile = "Vehículo",
+                    bearing = currentBearing,
+                    speedMps = currentSpeedMps
                 )
                 if (osrmResult.points.isNotEmpty()) {
                     routePoints = osrmResult.points
@@ -485,7 +504,29 @@ fun MapScreen() {
                         }
                     }
 
-                    // 2. GUÍA VOCAL DE PASOS DE NAVEGACIÓN
+                    // 2. DETECCIÓN DE CAMBIO DE SENTIDO / VIRAGE (> 90° DURANTE > 3 SEGUNDOS)
+                    if (isNavigating && customDestination != null && customRoutePoints.isNotEmpty() && !isCalculatingRoute) {
+                        val userCoord = newGeoPoint.toRouteCoordinate()
+                        val routeCoords = customRoutePoints.map { it.toRouteCoordinate() }
+
+                        routeManager.checkHeadingDeviationAndRecalculate(
+                            userPoint = userCoord,
+                            userBearing = UserLocationState.currentBearing,
+                            activeRoutePoints = routeCoords,
+                            onTriggerRecalculate = {
+                                Log.w("MAP_HEADING_REROUTE", "Viraje o contravía detectada (>90° por 3s). Recalculando desde nueva dirección...")
+                                Toast.makeText(context, "🔄 Cambio de rumbo detectado. Recalculando ruta...", Toast.LENGTH_SHORT).show()
+                                calculateRouteToPoint(
+                                    targetPoint = customDestination!!,
+                                    targetName = customDestinationName,
+                                    automatic = isAutomaticEvacuation,
+                                    isRerouting = true
+                                )
+                            }
+                        )
+                    }
+
+                    // 3. GUÍA VOCAL Y ASISTENCIA HÁPTICA DE PASOS DE NAVEGACIÓN
                     if (isNavigating && routeSteps.isNotEmpty() && currentStepIndex < routeSteps.size) {
                         val currentStep = routeSteps[currentStepIndex]
                         val distanceToStep = newGeoPoint.distanceToAsDouble(currentStep.location)
@@ -499,8 +540,15 @@ fun MapScreen() {
                         }
 
                         if (distanceToStep <= triggerDistanceMeters) {
-                            val audioRes = CustomVoicePlayer.getAudioForStep(currentStep.modifier)
-                            CustomVoicePlayer.playAudio(context, audioRes)
+                            val modifier = currentStep.modifier.lowercase()
+                            when {
+                                modifier.contains("right") -> com.example.proyecto_evacuapp.utils.AdaptiveAssistant.notifyTurnRight(context)
+                                modifier.contains("left") -> com.example.proyecto_evacuapp.utils.AdaptiveAssistant.notifyTurnLeft(context)
+                                else -> {
+                                    val audioRes = CustomVoicePlayer.getAudioForStep(currentStep.modifier)
+                                    CustomVoicePlayer.playAudio(context, audioRes)
+                                }
+                            }
 
                             if (currentStepIndex < routeSteps.size - 1) {
                                 currentStepIndex++

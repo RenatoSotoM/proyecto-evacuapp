@@ -23,7 +23,8 @@ data class GraphEdge(
     var accessibilityPenalty: Double,
     var isBlocked: Boolean,
     val bidirectional: Boolean,
-    var blockingIncidentLocalId: String? = null
+    var blockingIncidentLocalId: String? = null,
+    val highwayType: String = "residential"
 )
 
 data class PathResult(
@@ -115,6 +116,71 @@ class RoadGraph {
     }
 
     /**
+     * Map Snapping Avanzado: Enganche por vector de movimiento (bearing), velocidad y tipo de vía (Autopista vs Caletera vs Local)
+     */
+    fun nearestMatchingEdge(
+        point: RouteCoordinate,
+        bearing: Float? = null,
+        speedMps: Double? = null,
+        currentEdgeId: String? = null,
+        maxDistanceMeters: Double = 60.0
+    ): GraphEdge? {
+        var bestEdge: GraphEdge? = null
+        var bestScore = Double.MAX_VALUE
+
+        for (edge in edges.values) {
+            val from = nodes[edge.fromId]?.coordinate ?: continue
+            val to = nodes[edge.toId]?.coordinate ?: continue
+
+            val dist = distancePointToSegmentMeters(point, from, to)
+            if (dist > maxDistanceMeters) continue
+
+            val edgeAzimuth = calculateAzimuthDegrees(from, to)
+
+            // 1. Filtrado de Aristas por Rumbo (Sensible al Sentido de Marcha)
+            val angleDiff = if (bearing != null && bearing >= 0) {
+                if (edge.bidirectional) {
+                    val forwardDiff = angularDifferenceDegrees(bearing.toDouble(), edgeAzimuth)
+                    val reverseDiff = angularDifferenceDegrees(bearing.toDouble(), (edgeAzimuth + 180.0) % 360.0)
+                    minOf(forwardDiff, reverseDiff)
+                } else {
+                    angularDifferenceDegrees(bearing.toDouble(), edgeAzimuth)
+                }
+            } else {
+                0.0
+            }
+
+            // Descartar si la diferencia angular es > 60° respecto al movimiento actual (evita salto a carril opuesto)
+            if (bearing != null && bearing >= 0 && angleDiff > 60.0) continue
+
+            // 2. Desambiguación entre Autopista, Caletera y Calle Local según Velocidad
+            var score = dist + (angleDiff * 0.4)
+
+            if (speedMps != null && speedMps > 13.88) { // > 50 km/h: Autopista
+                if (edge.highwayType in setOf("service", "residential", "tertiary")) {
+                    score += 50.0 // Penalizar caletera o calle local a alta velocidad
+                }
+            } else if (speedMps != null && speedMps <= 8.33) { // <= 30 km/h: Caletera / Salida
+                if (edge.highwayType in setOf("service", "residential")) {
+                    score -= 10.0 // Permitir enganche a caletera a baja velocidad
+                }
+            }
+
+            // 3. Continuidad de Trayectoria: Mantener posición sobre la vía actual
+            if (currentEdgeId != null && edge.id == currentEdgeId) {
+                score -= 15.0 // Bonificación de inercia sobre la vía actual
+            }
+
+            if (score < bestScore) {
+                bestScore = score
+                bestEdge = edge
+            }
+        }
+
+        return bestEdge ?: nearestEdge(point, maxDistanceMeters)
+    }
+
+    /**
      * Dijkstra sobre el costo adaptativo C(e) (pesos no negativos). [edgePenalties] permite
      * penalizar aristas ya usadas por otra alternativa, para favorecer diversidad entre rutas.
      */
@@ -140,7 +206,9 @@ class RoadGraph {
         queue.add(startNodeId to 0.0)
 
         while (queue.isNotEmpty()) {
-            val (currentId, currentDist) = queue.poll()
+            val element = queue.poll() ?: break
+            val currentId = element.first
+            val currentDist = element.second
             if (currentId in visited) continue
             visited += currentId
             if (currentId == endNodeId) break
@@ -148,6 +216,12 @@ class RoadGraph {
             val outgoingEdgeIds = adjacency[currentId] ?: continue
             for (edgeId in outgoingEdgeIds) {
                 val edge = edges[edgeId] ?: continue
+
+                // Respetar sentido único en vías unidireccionales
+                if (!edge.bidirectional && currentId != edge.fromId) {
+                    continue
+                }
+
                 val neighborId = if (edge.fromId == currentId) edge.toId else edge.fromId
                 if (neighborId in visited) continue
 
@@ -245,4 +319,23 @@ fun distancePointToSegmentMeters(point: RouteCoordinate, start: RouteCoordinate,
     val dx = p[0] - closestX
     val dy = p[1] - closestY
     return sqrt(dx * dx + dy * dy)
+}
+
+/** Calcula el azimut angular en grados [0°, 360°) entre dos coordenadas. */
+fun calculateAzimuthDegrees(start: RouteCoordinate, end: RouteCoordinate): Double {
+    val dLon = Math.toRadians(end.longitude - start.longitude)
+    val lat1 = Math.toRadians(start.latitude)
+    val lat2 = Math.toRadians(end.latitude)
+
+    val y = sin(dLon) * cos(lat2)
+    val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+
+    val brng = Math.toDegrees(atan2(y, x))
+    return (brng + 360.0) % 360.0
+}
+
+/** Diferencia angular mínima en grados [0°, 180°] entre dos ángulos. */
+fun angularDifferenceDegrees(angle1: Double, angle2: Double): Double {
+    val diff = kotlin.math.abs(angle1 - angle2) % 360.0
+    return if (diff > 180.0) 360.0 - diff else diff
 }

@@ -40,6 +40,7 @@ object OsrmRoutingService {
         end: GeoPoint,
         profile: String = "Vehículo",
         bearing: Float? = null,
+        speedMps: Double? = null,
         avoidPoints: List<GeoPoint> = emptyList()
     ): OsrmRouteResponse = withContext(Dispatchers.IO) {
 
@@ -57,7 +58,9 @@ object OsrmRoutingService {
             else -> "car"
         }
 
-        val urlString = buildString {
+        val applyBearings = bearing != null && bearing >= 0 && osrmProfile == "driving" && (speedMps == null || speedMps > 1.0)
+
+        fun buildUrl(includeBearings: Boolean): String = buildString {
             append("https://routing.openstreetmap.de/")
             append("routed-")
             append(serviceName)
@@ -75,11 +78,31 @@ object OsrmRoutingService {
             append("&geometries=geojson")
             append("&steps=true")
             append("&alternatives=false")
+
+            if (includeBearings && bearing != null) {
+                val b = bearing.toInt().coerceIn(0, 359)
+                append("&bearings=")
+                append(b)
+                append(",45;")
+                append("&radiuses=15;")
+            }
         }
 
-        var connection: HttpURLConnection? = null
+        val primaryUrl = buildUrl(applyBearings)
+        var response = executeOsrmQuery(primaryUrl)
 
-        try {
+        // Si con bearings falla (HTTP 400), reintenta sin bearings como respaldo de seguridad
+        if (response.points.isEmpty() && applyBearings) {
+            val fallbackUrl = buildUrl(false)
+            response = executeOsrmQuery(fallbackUrl)
+        }
+
+        response
+    }
+
+    private fun executeOsrmQuery(urlString: String): OsrmRouteResponse {
+        var connection: HttpURLConnection? = null
+        return try {
             connection = (URL(urlString).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 8_000
@@ -89,9 +112,8 @@ object OsrmRoutingService {
             }
 
             val responseCode = connection.responseCode
-
             if (responseCode !in 200..299) {
-                return@withContext OsrmRouteResponse(
+                return OsrmRouteResponse(
                     points = emptyList(),
                     distanceText = "--",
                     durationText = "--",
@@ -101,10 +123,15 @@ object OsrmRoutingService {
 
             val responseText = connection.inputStream.bufferedReader().use { it.readText() }
             val json = JSONObject(responseText)
-            val routes = json.optJSONArray("routes")
+            val routes = json.optJSONArray("routes") ?: return OsrmRouteResponse(
+                points = emptyList(),
+                distanceText = "--",
+                durationText = "--",
+                errorMessage = "OSRM no devolvió rutas."
+            )
 
-            if (routes == null || routes.length() == 0) {
-                return@withContext OsrmRouteResponse(
+            if (routes.length() == 0) {
+                return OsrmRouteResponse(
                     points = emptyList(),
                     distanceText = "--",
                     durationText = "--",
@@ -217,6 +244,7 @@ object OsrmRoutingService {
         end: GeoPoint,
         avoidPoints: List<GeoPoint>,
         profile: String,
-        bearing: Float? = null
-    ) = fetchRealStreetRoute(start, end, profile, bearing, avoidPoints)
+        bearing: Float? = null,
+        speedMps: Double? = null
+    ) = fetchRealStreetRoute(start, end, profile, bearing, speedMps, avoidPoints)
 }

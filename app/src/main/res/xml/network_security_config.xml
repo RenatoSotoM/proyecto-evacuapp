@@ -5,6 +5,7 @@
         <domain includeSubdomains="true">10.123.125.204</domain>
         <!-- IP anterior por si acaso -->
         <domain includeSubdomains="true">192.168.100.12</domain>
+        <domain includeSubdomains="true">172.19.128.1</domain>
         <!-- Emulador y local -->
 
         <domain includeSubdomains="true">192.168.180.55</domain>

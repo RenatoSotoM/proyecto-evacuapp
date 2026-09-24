@@ -153,12 +153,27 @@ class RoadNetworkRepository {
         return anyChanged
     }
 
+    fun findMatchingEdge(
+        point: RouteCoordinate,
+        bearing: Float? = null,
+        speedMps: Double? = null,
+        currentEdgeId: String? = null
+    ): GraphEdge? {
+        return graph.nearestMatchingEdge(
+            point = point,
+            bearing = bearing,
+            speedMps = speedMps,
+            currentEdgeId = currentEdgeId,
+            maxDistanceMeters = MAX_MATCH_DISTANCE_METERS
+        )
+    }
+
     private fun resolveAffectedEdges(incident: IncidentEntity): List<GraphEdge> {
         val explicitIds = parseAffectedSegmentIds(incident.affectedSegmentIds)
         if (explicitIds.isNotEmpty()) {
             return explicitIds.mapNotNull { graph.edgeById(it) }
         }
         val point = RouteCoordinate(incident.latitude, incident.longitude)
-        return listOfNotNull(graph.nearestEdge(point, MAX_MATCH_DISTANCE_METERS))
+        return listOfNotNull(graph.nearestMatchingEdge(point, maxDistanceMeters = MAX_MATCH_DISTANCE_METERS))
     }
 }

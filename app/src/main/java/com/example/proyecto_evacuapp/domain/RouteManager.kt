@@ -105,11 +105,102 @@ class RouteManager(
         lastDestination = null
         _routeOptions.value = emptyList()
         _selectedIndex.value = 0
+        headingDeviationStartTime = null
     }
 
     private fun recalculateActiveRoutesIfAny() {
         val origin = lastOrigin ?: return
         val destination = lastDestination ?: return
         calculateRoutes(origin, destination, lastProfile)
+    }
+
+    private var headingDeviationStartTime: Long? = null
+
+    /**
+     * Detección de cambio de sentido y recálculo automático:
+     * Evalúa si la diferencia angular entre el rumbo del usuario y la dirección de la ruta activa es > 90°
+     * durante más de 3 segundos sostenidos (3000ms), disparando recálculo automático.
+     */
+    fun checkHeadingDeviationAndRecalculate(
+        userPoint: RouteCoordinate,
+        userBearing: Float?,
+        activeRoutePoints: List<RouteCoordinate>,
+        onTriggerRecalculate: () -> Unit
+    ) {
+        if (userBearing == null || userBearing < 0 || activeRoutePoints.size < 2) {
+            headingDeviationStartTime = null
+            return
+        }
+
+        val segmentAzimuth = findActiveRouteSegmentAzimuth(userPoint, activeRoutePoints) ?: run {
+            headingDeviationStartTime = null
+            return
+        }
+
+        val angularDiff = com.example.proyecto_evacuapp.domain.engine.angularDifferenceDegrees(userBearing.toDouble(), segmentAzimuth)
+
+        if (angularDiff > 90.0) {
+            val now = System.currentTimeMillis()
+            val startTime = headingDeviationStartTime
+            if (startTime == null) {
+                headingDeviationStartTime = now
+            } else if (now - startTime >= 3000L) { // 3 segundos sostenidos
+                Log.w(TAG, "Desviación angular de rumbo > 90° durante 3s (${angularDiff.toInt()}° vs tramo ${segmentAzimuth.toInt()}°). Disparando recálculo...")
+                headingDeviationStartTime = null
+                onTriggerRecalculate()
+            }
+        } else {
+            headingDeviationStartTime = null
+        }
+    }
+
+    private fun findActiveRouteSegmentAzimuth(
+        userPoint: RouteCoordinate,
+        routePoints: List<RouteCoordinate>
+    ): Double? {
+        var closestDist = Double.MAX_VALUE
+        var bestAzimuth: Double? = null
+
+        for (i in 0 until routePoints.size - 1) {
+            val p1 = routePoints[i]
+            val p2 = routePoints[i + 1]
+            val dist = com.example.proyecto_evacuapp.domain.engine.distancePointToSegmentMeters(userPoint, p1, p2)
+            if (dist < closestDist) {
+                closestDist = dist
+                bestAzimuth = com.example.proyecto_evacuapp.domain.engine.calculateAzimuthDegrees(p1, p2)
+            }
+        }
+
+        return if (closestDist <= 60.0) bestAzimuth else null
+    }
+
+    /**
+     * Requerimiento 3: Gestión diferenciada de reportes en ruta.
+     * Clasifica los incidentes cercanos en la ruta:
+     * - Alertas informativas (Tráfico, Hoyo, Clima, Precaución): dispara aviso de voz/panel sin alterar la ruta.
+     * - Bloqueos críticos: asignan C(e) = infinity en RoadGraph.kt y fuerzan recálculo automático.
+     */
+    fun checkNearbyInformativeIncidents(
+        userPoint: RouteCoordinate,
+        incidents: List<IncidentEntity>,
+        warningRadiusMeters: Double = 100.0,
+        onInformativeAlert: (IncidentEntity) -> Unit
+    ) {
+        val informativeTypes = setOf("TRAFICO", "TRÁFICO", "HOYO", "BACHE", "CLIMA", "PRECAUCION", "PRECAUCIÓN", "OTRO")
+
+        val nearbyInformative = incidents.find { incident ->
+            val isInformative = incident.type.uppercase() in informativeTypes ||
+                    (incident.status != "VERIFIED" && incident.severity !in listOf("CRITICA", "ALTA", "CRITICAL", "HIGH"))
+
+            if (isInformative) {
+                val incPoint = RouteCoordinate(incident.latitude, incident.longitude)
+                val dist = com.example.proyecto_evacuapp.domain.engine.haversineMeters(userPoint, incPoint)
+                dist <= warningRadiusMeters
+            } else {
+                false
+            }
+        }
+
+        nearbyInformative?.let { onInformativeAlert(it) }
     }
 }
