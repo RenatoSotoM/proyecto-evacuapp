@@ -1,37 +1,39 @@
 package com.example.proyecto_evacuapp.data.remote
 
+import com.google.gson.annotations.SerializedName
 import okhttp3.ResponseBody
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.Query
 
 data class GraphNodeDto(
-    val id: String,
-    val lat: Double,
-    val lon: Double
+    @SerializedName("id", alternate = ["nodeId", "node_id"]) val id: String? = null,
+    @SerializedName("lat", alternate = ["latitude"]) val lat: Double? = 0.0,
+    @SerializedName("lon", alternate = ["longitude"]) val lon: Double? = 0.0
 )
 
 data class GeoPointDto(
-    val lat: Double,
-    val lon: Double
+    @SerializedName("lat", alternate = ["latitude"]) val lat: Double? = 0.0,
+    @SerializedName("lon", alternate = ["longitude"]) val lon: Double? = 0.0
 )
 
 data class GraphEdgeDto(
-    val id: String,
-    val fromNodeId: String,
-    val toNodeId: String,
-    val distanceMeters: Double,
-    val riskWeight: Double?,
-    val accessibilityPenalty: Double?,
-    val isBlocked: Boolean?,
-    val bidirectional: Boolean?,
-    val highwayType: String?,
-    val geometry: List<GeoPointDto>?
+    @SerializedName("id", alternate = ["edgeId", "edge_id"]) val id: String? = null,
+    @SerializedName("fromNodeId", alternate = ["from_node_id", "fromId", "from_id", "source", "u", "from"]) val fromNodeId: String? = null,
+    @SerializedName("toNodeId", alternate = ["to_node_id", "toId", "to_id", "target", "v", "to"]) val toNodeId: String? = null,
+    @SerializedName("distanceMeters", alternate = ["distance_meters", "distance", "length", "weight"]) val distanceMeters: Double? = 0.0,
+    @SerializedName("riskWeight", alternate = ["risk_weight", "risk"]) val riskWeight: Double? = 0.0,
+    @SerializedName("accessibilityPenalty", alternate = ["accessibility_penalty", "accessibility"]) val accessibilityPenalty: Double? = 0.0,
+    @SerializedName("isBlocked", alternate = ["is_blocked", "blocked"]) val isBlocked: Boolean? = false,
+    @SerializedName("bidirectional", alternate = ["is_bidirectional", "two_way"]) val bidirectional: Boolean? = true,
+    @SerializedName("oneway", alternate = ["is_oneway"]) val oneway: Boolean? = false,
+    @SerializedName("highwayType", alternate = ["highway_type", "type", "highway"]) val highwayType: String? = "residential",
+    @SerializedName("geometry", alternate = ["geom", "coordinates"]) val geometry: List<GeoPointDto>? = null
 )
 
 data class MapGraphResponseDto(
-    val nodes: List<GraphNodeDto>?,
-    val edges: List<GraphEdgeDto>?
+    @SerializedName("nodes") val nodes: List<GraphNodeDto> = emptyList(),
+    @SerializedName("edges") val edges: List<GraphEdgeDto> = emptyList()
 )
 
 /**

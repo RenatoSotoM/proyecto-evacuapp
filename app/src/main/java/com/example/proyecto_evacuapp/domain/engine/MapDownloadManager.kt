@@ -32,7 +32,8 @@ sealed class DownloadState {
 
 /**
  * Gestor de descarga asíncrona para grafos viales optimizados por anillos (30 km)
- * mediante ejecución secuencial estricta en startFullPreload, con manejo de cadenas JSON escapadas.
+ * mediante ejecución secuencial estricta en startFullPreload, utilizando streaming directo
+ * desde ResponseBody para prevenir errores OutOfMemory (OOM) en payloads grandes.
  */
 object MapDownloadManager {
 
@@ -91,8 +92,34 @@ object MapDownloadManager {
         }
     }
 
+    private fun parseGraphResponseBody(body: okhttp3.ResponseBody, gson: Gson): MapGraphResponseDto {
+        val rawStream = body.byteStream()
+        val bufferedStream = java.io.BufferedInputStream(rawStream)
+
+        // Detectar si los primeros 2 bytes corresponden a la cabecera GZIP
+        bufferedStream.mark(2)
+        val header = ByteArray(2)
+        val read = bufferedStream.read(header, 0, 2)
+        bufferedStream.reset()
+
+        val inputStream: java.io.InputStream = if (read == 2 && header[0] == 0x1F.toByte() && header[1] == 0x8B.toByte()) {
+            java.util.zip.GZIPInputStream(bufferedStream)
+        } else {
+            bufferedStream
+        }
+
+        // Streaming directo de lectura sin cargar el texto completo en RAM
+        java.io.InputStreamReader(inputStream, Charsets.UTF_8).use { streamReader ->
+            com.google.gson.stream.JsonReader(streamReader).use { jsonReader ->
+                jsonReader.isLenient = true
+                return gson.fromJson(jsonReader, MapGraphResponseDto::class.java)
+            }
+        }
+    }
+
     /**
-     * Bucle secuencial estricto en Dispatchers.IO para descargar Anillo 1, 2 y 3, limpiando JSON escapado, unificando y guardando en disco.
+     * Bucle secuencial estricto en Dispatchers.IO para descargar Anillo 1, 2 y 3,
+     * emitiendo progreso de la UI (5%, 35%, 70%, 100%), unificando y guardando en disco.
      */
     suspend fun startFullPreload(
         context: Context,
@@ -109,47 +136,24 @@ object MapDownloadManager {
         try {
             Log.d("EVAC_DEBUG", "Iniciando Anillo 1...")
             val resp1 = api.getGraphRing(centerLat = lat, centerLon = lon, ringMin = 0, ringMax = 5000, travelMode = travelMode, isReducedMobility = isReducedMobility, avoidIncidents = avoidIncidents)
-            val raw1 = resp1.string()
-            val clean1 = if (raw1.startsWith("\"") && raw1.endsWith("\"")) {
-                gson.fromJson(raw1, String::class.java)
-            } else {
-                raw1
-            }
-            val r1 = gson.fromJson(clean1, MapGraphResponseDto::class.java)
-            _downloadState.value = DownloadState.Downloading(33)
+            val r1 = parseGraphResponseBody(resp1, gson)
+            _downloadState.value = DownloadState.Downloading(35)
 
             Log.d("EVAC_DEBUG", "Anillo 1 OK. Iniciando Anillo 2...")
             val resp2 = api.getGraphRing(centerLat = lat, centerLon = lon, ringMin = 5000, ringMax = 15000, travelMode = travelMode, isReducedMobility = isReducedMobility, avoidIncidents = avoidIncidents)
-            val raw2 = resp2.string()
-            val clean2 = if (raw2.startsWith("\"") && raw2.endsWith("\"")) {
-                gson.fromJson(raw2, String::class.java)
-            } else {
-                raw2
-            }
-            val r2 = gson.fromJson(clean2, MapGraphResponseDto::class.java)
-            _downloadState.value = DownloadState.Downloading(66)
+            val r2 = parseGraphResponseBody(resp2, gson)
+            _downloadState.value = DownloadState.Downloading(70)
 
             Log.d("EVAC_DEBUG", "Anillo 2 OK. Iniciando Anillo 3...")
             val resp3 = api.getGraphRing(centerLat = lat, centerLon = lon, ringMin = 15000, ringMax = 30000, travelMode = travelMode, isReducedMobility = isReducedMobility, avoidIncidents = avoidIncidents)
-            val raw3 = resp3.string()
-            val clean3 = if (raw3.startsWith("\"") && raw3.endsWith("\"")) {
-                gson.fromJson(raw3, String::class.java)
-            } else {
-                raw3
-            }
-            val r3 = gson.fromJson(clean3, MapGraphResponseDto::class.java)
-            _downloadState.value = DownloadState.Downloading(100)
+            val r3 = parseGraphResponseBody(resp3, gson)
 
-            val unifiedEdges = (r1.edges.orEmpty() + r2.edges.orEmpty() + r3.edges.orEmpty()).distinctBy { it.id }
-            val unifiedNodes = (r1.nodes.orEmpty() + r2.nodes.orEmpty() + r3.nodes.orEmpty()).distinctBy { it.id }
-
-            val unifiedResponse = MapGraphResponseDto(
-                nodes = unifiedNodes,
-                edges = unifiedEdges
-            )
+            val unifiedNodes = (r1.nodes + r2.nodes + r3.nodes).distinctBy { it.id }
+            val unifiedEdges = (r1.edges + r2.edges + r3.edges).distinctBy { it.id }
+            val finalGraph = MapGraphResponseDto(nodes = unifiedNodes, edges = unifiedEdges)
 
             val file = getLocalMapFile(context)
-            val jsonString = gson.toJson(unifiedResponse)
+            val jsonString = gson.toJson(finalGraph)
             FileWriter(file).use { it.write(jsonString) }
 
             context.dataStore.edit { prefs ->

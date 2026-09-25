@@ -35,8 +35,7 @@ private fun parseAffectedSegmentIds(raw: String): Set<String> =
 
 /**
  * Repositorio espacial: Deserializa directamente el JSON comprimido del grafo de 30 km del backend NestJS.
- * REGLA ESTRICTA: Si el JSON está vacío o no hay red local guardada, devuelve emptyList() y alerta
- * 'Ruta no encontrada sobre la red vial'. NUNCA dibuja líneas rectas ni fallbacks simplificados.
+ * Valida robustamente esquemas DTO con anotaciones @SerializedName y fallbacks.
  */
 class RoadNetworkRepository {
     private val graph = RoadGraph()
@@ -57,12 +56,12 @@ class RoadNetworkRepository {
                         if (parsed != null && parsed.first.isNotEmpty() && parsed.second.isNotEmpty()) {
                             graph.load(parsed.first, parsed.second)
                             loadedFromJson = true
-                            Log.d(TAG, "Grafo vectorial cargado con éxito desde JSON local: ${parsed.first.size} nodos, ${parsed.second.size} aristas.")
+                            Log.d("EVAC_DEBUG", "Grafo local cargado: ${parsed.first.size} nodos, ${parsed.second.size} aristas.")
                         }
                     }
 
                     if (!loadedFromJson) {
-                        Log.e(TAG, "FALLO CRÍTICO: Archivo JSON local de grafo no encontrado o vacío. PROHIBIDO LÍNEA RECTA. Grafo vacío.")
+                        Log.e(TAG, "FALLO CRÍTICO: Archivo JSON local de grafo no encontrado o vacío. Grafo vacío.")
                         graph.load(emptyList(), emptyList())
                     }
 
@@ -73,31 +72,56 @@ class RoadNetworkRepository {
     }
 
     private fun parseJsonFileToGraph(file: File): Pair<List<GraphNode>, List<GraphEdge>>? {
-        if (!file.exists() || file.length() == 0L) return null
+        if (!file.exists() || file.length() == 0L) {
+            Log.d("EVAC_DEBUG", "parseJsonFileToGraph: File does not exist or size is 0.")
+            return null
+        }
         try {
             val response = FileReader(file).use { reader ->
                 Gson().fromJson(reader, MapGraphResponseDto::class.java)
             }
 
-            val nodesList = response?.nodes?.map {
-                GraphNode(id = it.id, coordinate = RouteCoordinate(it.lat, it.lon))
+            Log.d("EVAC_DEBUG", "parseJsonFileToGraph raw parsed DTO -> nodes count: ${response?.nodes?.size ?: 0}, edges count: ${response?.edges?.size ?: 0}")
+
+            val nodesList = response?.nodes?.mapNotNull {
+                val id = it.id ?: return@mapNotNull null
+                val lat = it.lat ?: 0.0
+                val lon = it.lon ?: 0.0
+                GraphNode(id = id, coordinate = RouteCoordinate(lat, lon))
             } ?: emptyList()
 
-            val edgesList = response?.edges?.map { edgeDto ->
-                val geometryCoords = edgeDto.geometry?.map { RouteCoordinate(it.lat, it.lon) } ?: emptyList()
+            val edgesList = response?.edges?.mapNotNull { edgeDto ->
+                val id = edgeDto.id ?: "edge_${System.nanoTime()}_${Math.random()}"
+                val fromId = edgeDto.fromNodeId
+                val toId = edgeDto.toNodeId
+                if (fromId == null || toId == null) {
+                    Log.d("EVAC_DEBUG", "Edge dropped due to null endpoint: id=$id, from=$fromId, to=$toId")
+                    return@mapNotNull null
+                }
+                val dist = edgeDto.distanceMeters ?: 10.0
+                val isOneway = edgeDto.oneway ?: false
+                val bidirectional = (edgeDto.bidirectional ?: true) && !isOneway
+                val geometryCoords = edgeDto.geometry?.mapNotNull { g ->
+                    val glat = g.lat
+                    val glon = g.lon
+                    if (glat != null && glon != null) RouteCoordinate(glat, glon) else null
+                } ?: emptyList()
+
                 GraphEdge(
-                    id = edgeDto.id,
-                    fromId = edgeDto.fromNodeId,
-                    toId = edgeDto.toNodeId,
-                    distanceMeters = edgeDto.distanceMeters,
+                    id = id,
+                    fromId = fromId,
+                    toId = toId,
+                    distanceMeters = dist,
                     riskWeight = edgeDto.riskWeight ?: 0.0,
                     accessibilityPenalty = edgeDto.accessibilityPenalty ?: 0.05,
                     isBlocked = edgeDto.isBlocked ?: false,
-                    bidirectional = edgeDto.bidirectional ?: true,
+                    bidirectional = bidirectional,
                     highwayType = edgeDto.highwayType ?: "residential",
                     geometry = geometryCoords
                 )
             } ?: emptyList()
+
+            Log.d("EVAC_DEBUG", "Grafo local cargado: ${nodesList.size} nodos, ${edgesList.size} aristas.")
 
             if (nodesList.isNotEmpty() && edgesList.isNotEmpty()) {
                 return Pair(nodesList, edgesList)
@@ -125,10 +149,11 @@ class RoadNetworkRepository {
                     activeIncidentIds += incident.localId
                     val targetEdges = resolveAffectedEdges(incident)
                     for (edge in targetEdges) {
+                        val edgeId = edge.id ?: continue
                         val changed = if (type == IncidentType.RUTA_INACCESIBLE) {
-                            graph.applyEdgeAccessibility(edge.id, penalty = 1.0, incidentLocalId = incident.localId)
+                            graph.applyEdgeAccessibility(edgeId, penalty = 1.0, incidentLocalId = incident.localId)
                         } else {
-                            graph.applyEdgeRisk(edge.id, riskWeight = 1.0, blocked = true, incidentLocalId = incident.localId)
+                            graph.applyEdgeRisk(edgeId, riskWeight = 1.0, blocked = true, incidentLocalId = incident.localId)
                         }
                         if (changed) anyChanged = true
                     }

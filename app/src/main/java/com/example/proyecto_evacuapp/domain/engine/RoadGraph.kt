@@ -1,5 +1,6 @@
 package com.example.proyecto_evacuapp.domain.engine
 
+import android.util.Log
 import com.example.proyecto_evacuapp.ui.components.RouteCoordinate
 import com.example.proyecto_evacuapp.ui.components.RouteMobilityProfile
 import java.util.PriorityQueue
@@ -9,20 +10,20 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 data class GraphNode(
-    val id: String,
-    val coordinate: RouteCoordinate
+    val id: String? = null,
+    val coordinate: RouteCoordinate = RouteCoordinate(0.0, 0.0)
 )
 
 /** Arista mutable en memoria: riskWeight/isBlocked se actualizan en caliente ante incidentes. */
 data class GraphEdge(
-    val id: String,
-    val fromId: String,
-    val toId: String,
-    val distanceMeters: Double,
-    var riskWeight: Double,
-    var accessibilityPenalty: Double,
-    var isBlocked: Boolean,
-    val bidirectional: Boolean,
+    val id: String? = null,
+    val fromId: String? = null,
+    val toId: String? = null,
+    val distanceMeters: Double = 0.0,
+    var riskWeight: Double = 0.0,
+    var accessibilityPenalty: Double = 0.0,
+    var isBlocked: Boolean = false,
+    val bidirectional: Boolean = true,
     var blockingIncidentLocalId: String? = null,
     val highwayType: String = "residential",
     val geometry: List<RouteCoordinate> = emptyList()
@@ -43,29 +44,38 @@ data class PathResult(
  */
 class RoadGraph {
 
-    private val nodes = HashMap<String, GraphNode>()
-    private val edges = HashMap<String, GraphEdge>()
+    private val _nodes = HashMap<String, GraphNode>()
+    private val _edges = HashMap<String, GraphEdge>()
     private val adjacency = HashMap<String, MutableList<String>>() // nodeId -> edgeIds salientes
 
+    val nodes: Map<String, GraphNode> get() = _nodes
+    val edges: Map<String, GraphEdge> get() = _edges
+
     fun load(nodeList: List<GraphNode>, edgeList: List<GraphEdge>) {
-        nodes.clear()
-        edges.clear()
+        _nodes.clear()
+        _edges.clear()
         adjacency.clear()
-        nodeList.forEach { nodes[it.id] = it }
+        nodeList.forEach { node ->
+            val id = node.id ?: return@forEach
+            _nodes[id] = node
+        }
         edgeList.forEach { edge ->
-            edges[edge.id] = edge
-            adjacency.getOrPut(edge.fromId) { mutableListOf() }.add(edge.id)
+            val id = edge.id ?: return@forEach
+            val fromId = edge.fromId ?: return@forEach
+            val toId = edge.toId ?: return@forEach
+            _edges[id] = edge
+            adjacency.getOrPut(fromId) { mutableListOf() }.add(id)
             if (edge.bidirectional) {
-                adjacency.getOrPut(edge.toId) { mutableListOf() }.add(edge.id)
+                adjacency.getOrPut(toId) { mutableListOf() }.add(id)
             }
         }
     }
 
-    fun isEmpty(): Boolean = nodes.isEmpty() || edges.isEmpty()
+    fun isEmpty(): Boolean = _nodes.isEmpty() || _edges.isEmpty()
 
-    fun edgeById(edgeId: String): GraphEdge? = edges[edgeId]
+    fun edgeById(edgeId: String): GraphEdge? = _edges[edgeId]
 
-    fun allEdges(): Collection<GraphEdge> = edges.values
+    fun allEdges(): Collection<GraphEdge> = _edges.values
 
     fun applyEdgeRisk(edgeId: String, riskWeight: Double, blocked: Boolean, incidentLocalId: String?): Boolean {
         val edge = edges[edgeId] ?: return false
@@ -99,6 +109,38 @@ class RoadGraph {
 
     fun nearestNode(point: RouteCoordinate): GraphNode? =
         nodes.values.minByOrNull { haversineMeters(it.coordinate, point) }
+
+    fun findNearestNode(lat: Double, lon: Double, maxRadiusMeters: Double = 1000.0): GraphNode? {
+        var closestNode: GraphNode? = null
+        var minDistance = Double.MAX_VALUE
+
+        for (node in nodes.values) {
+            val dist = haversineDistance(lat, lon, node.coordinate.latitude, node.coordinate.longitude)
+            if (dist < minDistance && dist <= maxRadiusMeters) {
+                minDistance = dist
+                closestNode = node
+            }
+        }
+
+        if (closestNode != null) {
+            Log.d("EVAC_DEBUG", "Nodo encontrado a $minDistance metros (ID: ${closestNode.id})")
+        } else {
+            Log.e("EVAC_DEBUG", "No se encontró ningún nodo a menos de $maxRadiusMeters m de ($lat, $lon)")
+        }
+
+        return closestNode
+    }
+
+    private fun haversineDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val r = 6371000.0 // Radio de la Tierra en metros
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2)
+        val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+        return r * c
+    }
 
     /** Arista cuyo tramo (fromNode-toNode) está más cerca del punto dado, dentro de un radio. */
     fun nearestEdge(point: RouteCoordinate, maxDistanceMeters: Double = 60.0): GraphEdge? {
@@ -249,7 +291,7 @@ class RoadGraph {
                     continue
                 }
 
-                val neighborId = if (edge.fromId == currentId) edge.toId else edge.fromId
+                val neighborId = (if (edge.fromId == currentId) edge.toId else edge.fromId) ?: continue
                 if (neighborId in visited) continue
 
                 var extraPenalty = edgePenalties[edgeId] ?: 0.0
