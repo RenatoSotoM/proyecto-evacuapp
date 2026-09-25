@@ -17,18 +17,35 @@ import kotlinx.coroutines.withContext
 import org.osmdroid.util.GeoPoint
 
 /**
- * ViewModel que conecta la inicialización asíncrona de cartografía dinámica basada en GPS
- * y la precarga del motor de ruteo offline con la UI, ejecutándose en Dispatchers.IO con NonCancellable.
+ * Modelo de estado de sincronización explícito para la arquitectura offline-first de EvacuApp.
+ */
+sealed class SyncState {
+    object OnlineSynced : SyncState()
+    object Syncing : SyncState()
+    data class OfflineLocal(val reason: String = "Operating autonomously on local graph") : SyncState()
+    data class Error(val message: String) : SyncState()
+}
+
+/**
+ * ViewModel que conecta la inicialización asíncrona de cartografía dinámica basada en GPS,
+ * el estado explícito de sincronización (SyncState) y la precarga del motor de ruteo offline con la UI.
  */
 class RoutingViewModel : ViewModel() {
 
     val downloadState: StateFlow<DownloadState> = MapDownloadManager.downloadState
+
+    private val _syncState = MutableStateFlow<SyncState>(SyncState.OnlineSynced)
+    val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
 
     private val _isEngineReady = MutableStateFlow(false)
     val isEngineReady: StateFlow<Boolean> = _isEngineReady.asStateFlow()
 
     private val _calculatedRoute = MutableStateFlow<List<GeoPoint>>(emptyList())
     val calculatedRoute: StateFlow<List<GeoPoint>> = _calculatedRoute.asStateFlow()
+
+    fun updateSyncState(newState: SyncState) {
+        _syncState.value = newState
+    }
 
     /**
      * Verificación inicial al abrir la aplicación utilizando la ubicación GPS actual y destino.
@@ -42,9 +59,15 @@ class RoutingViewModel : ViewModel() {
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             withContext(NonCancellable) {
-                MapDownloadManager.checkAndDownloadOnStartup(context, userLat, userLng, destLat, destLng)
-                val ready = RoutingEngineManager.initializeEngine(context)
-                _isEngineReady.value = ready
+                _syncState.value = SyncState.Syncing
+                try {
+                    MapDownloadManager.checkAndDownloadOnStartup(context, userLat, userLng, destLat, destLng)
+                    val ready = RoutingEngineManager.initializeEngine(context)
+                    _isEngineReady.value = ready
+                    _syncState.value = SyncState.OnlineSynced
+                } catch (e: Exception) {
+                    _syncState.value = SyncState.OfflineLocal("Backend sync timeout or error: ${e.message}")
+                }
             }
         }
     }
@@ -57,14 +80,23 @@ class RoutingViewModel : ViewModel() {
     fun startFullPreload(context: Context, lat: Double, lon: Double) {
         viewModelScope.launch(Dispatchers.IO) {
             withContext(NonCancellable) {
-                MapDownloadManager.startFullPreload(context, lat, lon)
+                _syncState.value = SyncState.Syncing
+                try {
+                    MapDownloadManager.startFullPreload(context, lat, lon)
 
-                // Carga inmediata del archivo JSON en la memoria del RoadGraph para el motor local
-                val ready = RoutingEngineManager.initializeEngine(context)
-                _isEngineReady.value = ready
+                    // Carga inmediata del archivo JSON en la memoria del RoadGraph para el motor local
+                    val ready = RoutingEngineManager.initializeEngine(context)
+                    _isEngineReady.value = ready
+                    _syncState.value = SyncState.OnlineSynced
 
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "✅ Precarga completa de 30 km finalizada y cargada en memoria.", Toast.LENGTH_SHORT).show()
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "✅ Precarga completa de 30 km finalizada y cargada en memoria.", Toast.LENGTH_SHORT).show()
+                    }
+                } catch (e: Exception) {
+                    _syncState.value = SyncState.OfflineLocal("Preload failed, operating on local graph: ${e.message}")
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "⚠️ Modo autónomo activado por fallo de red.", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         }

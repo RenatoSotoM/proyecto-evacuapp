@@ -40,6 +40,7 @@ import com.example.proyecto_evacuapp.domain.engine.RoutingEngineManager
 import com.example.proyecto_evacuapp.ui.components.*
 import com.example.proyecto_evacuapp.ui.theme.*
 import com.example.proyecto_evacuapp.ui.viewmodel.RoutingViewModel
+import com.example.proyecto_evacuapp.ui.viewmodel.SyncState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.proyecto_evacuapp.utils.CustomVoicePlayer
 import com.example.proyecto_evacuapp.utils.MeshtaticSender
@@ -162,6 +163,7 @@ fun MapScreen() {
     // VIEWMODEL DE DESCARGA Y PRECARGA DE CARTOGRAFÍA Y RUTEOS
     val routingViewModel: RoutingViewModel = viewModel()
     val mapDownloadState by routingViewModel.downloadState.collectAsState()
+    val syncState by routingViewModel.syncState.collectAsState()
 
     LaunchedEffect(Unit) {
         coroutineScope.launch(Dispatchers.IO) {
@@ -342,10 +344,19 @@ fun MapScreen() {
                     if (osrmBlockingIncident == null) {
                         routePoints = primaryOsrm.points
                         steps = primaryOsrm.steps
+                        routingViewModel.updateSyncState(SyncState.OnlineSynced)
+                    } else {
+                        throw Exception("Blocked incident on OSRM route")
                     }
+                } else {
+                    throw Exception("Empty OSRM alternatives")
                 }
             } catch (e: Exception) {
-                Log.w("MAP_ROUTE", "Sin internet o fallo OSRM, usando motor de rutas local: ${e.message}")
+                Log.w("MAP_ROUTE", "Sin internet o fallo OSRM, transicionando a modo local autónomo: ${e.message}")
+                routingViewModel.updateSyncState(SyncState.OfflineLocal("OSRM fallback: ${e.message}"))
+                if (!isRerouting) {
+                    Toast.makeText(context, "⚠️ Operando con motor local autónomo (Offline)", Toast.LENGTH_SHORT).show()
+                }
             }
 
             // 2. CÁLCULO DE ALTERNATIVAS LOCALES Y ACOPLE DE TRAZADOS DE CALLE REAL
@@ -856,11 +867,36 @@ fun MapScreen() {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val badgeText = when (syncState) {
+                        is SyncState.OnlineSynced -> "Online Sincronizado"
+                        is SyncState.Syncing -> "Sincronizando..."
+                        is SyncState.OfflineLocal -> "Modo Local (Autónomo)"
+                        is SyncState.Error -> "Error de Red"
+                    }
+                    val badgeColor = when (syncState) {
+                        is SyncState.OnlineSynced -> SafeGreen
+                        is SyncState.Syncing -> WarningAmber
+                        is SyncState.OfflineLocal -> WarningAmber
+                        is SyncState.Error -> Color.Red
+                    }
+                    val badgeBg = when (syncState) {
+                        is SyncState.OnlineSynced -> SafeGreenLight
+                        is SyncState.Syncing -> WarningAmberLight
+                        is SyncState.OfflineLocal -> WarningAmberLight
+                        is SyncState.Error -> Color.Red.copy(alpha = 0.1f)
+                    }
+                    val badgeIcon = when (syncState) {
+                        is SyncState.OnlineSynced -> Icons.Default.CloudDone
+                        is SyncState.Syncing -> Icons.Default.Sync
+                        is SyncState.OfflineLocal -> Icons.Default.OfflinePin
+                        is SyncState.Error -> Icons.Default.Error
+                    }
+
                     ConnectivityBadge(
-                        text = if (isCalculatingRoute) "Calculando calle..." else "GPS Activo",
-                        color = SafeGreen,
-                        backgroundColor = SafeGreenLight,
-                        icon = Icons.Default.CloudDone
+                        text = if (isCalculatingRoute) "Calculando calle..." else badgeText,
+                        color = badgeColor,
+                        backgroundColor = badgeBg,
+                        icon = badgeIcon
                     )
 
                     // BANDA DE ESTADO DE MAPA Y BOTÓN DE PRECARGA MANUAL

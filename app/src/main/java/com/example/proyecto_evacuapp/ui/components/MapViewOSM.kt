@@ -127,9 +127,9 @@ fun MapViewOSM(
 
     val userMarker = remember(mapView) {
         Marker(mapView).apply {
-            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
             title = "Tu ubicación actual"
-            icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_myplaces)
+            icon = getScaledMarkerDrawable(context, R.drawable.ic_navigation_arrow, 20, 20)
             setInfoWindow(null)
             mapView.overlays.add(this)
         }
@@ -139,21 +139,27 @@ fun MapViewOSM(
         Marker(mapView).apply {
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
             title = "Destino Seleccionado"
-            icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_compass)
+            icon = getScaledMarkerDrawable(context, android.R.drawable.ic_menu_compass, 20, 20)
             mapView.overlays.add(this)
         }
     }
 
-    // Actualizar Ubicación de Usuario y Orientación por Brújula
+    // Actualizar Ubicación de Usuario y Orientación por Brújula (Modo Waze: centrado y rotación de mapa con bearing)
     LaunchedEffect(latitude, longitude, isTrackingUser, UserLocationState.currentBearing) {
         if (latitude != null && longitude != null) {
             val userLocation = GeoPoint(latitude, longitude)
             userMarker.position = userLocation
-            userMarker.rotation = -(UserLocationState.currentBearing ?: 0f)
+            val bearing = UserLocationState.currentBearing ?: 0f
+            userMarker.rotation = bearing
             userMarker.isEnabled = true
 
             if (isTrackingUser) {
                 mapView.controller.setCenter(userLocation)
+                if (bearing >= 0f) {
+                    mapView.mapOrientation = -bearing
+                }
+            } else {
+                mapView.mapOrientation = 0f
             }
             mapView.invalidate()
         }
@@ -177,7 +183,7 @@ fun MapViewOSM(
                 title = zone.name
                 snippet = "${zone.description ?: "Zona segura"}\nCapacidad: ${zone.capacity ?: "N/A"}"
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                icon = ContextCompat.getDrawable(context, R.drawable.ic_safe_zone)
+                icon = getScaledMarkerDrawable(context, R.drawable.ic_safe_zone, 15, 15)
 
                 setOnMarkerClickListener { m, _ ->
                     m.showInfoWindow()
@@ -206,7 +212,7 @@ fun MapViewOSM(
                     "POLICE", "POLICE_STATION" -> R.drawable.ic_police
                     else -> R.drawable.ic_safe_zone
                 }
-                icon = ContextCompat.getDrawable(context, drawableRes)
+                icon = getScaledMarkerDrawable(context, drawableRes, 15, 15)
 
                 setOnMarkerClickListener { m, _ ->
                     m.showInfoWindow()
@@ -396,4 +402,28 @@ fun dibujarZonaAfectada(mapView: MapView, puntos: List<GeoPoint>) {
 
     mapView.overlays.add(polygonOverlay)
     mapView.invalidate()
+}
+
+private fun getScaledMarkerDrawable(context: Context, resId: Int, targetWidthDp: Int = 40, targetHeightDp: Int = 40): Drawable {
+    val drawable = ContextCompat.getDrawable(context, resId) ?: return ContextCompat.getDrawable(context, android.R.drawable.ic_menu_myplaces)!!
+    val density = context.resources.displayMetrics.density
+    val widthPx = (targetWidthDp * density).toInt()
+    val heightPx = (targetHeightDp * density).toInt()
+
+    val bitmap = if (drawable is BitmapDrawable) {
+        drawable.bitmap
+    } else {
+        val bitmap = Bitmap.createBitmap(
+            drawable.intrinsicWidth.takeIf { it > 0 } ?: widthPx,
+            drawable.intrinsicHeight.takeIf { it > 0 } ?: heightPx,
+            Bitmap.Config.ARGB_8888
+        )
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, canvas.width, canvas.height)
+        drawable.draw(canvas)
+        bitmap
+    }
+
+    val scaledBitmap = Bitmap.createScaledBitmap(bitmap, widthPx, heightPx, true)
+    return BitmapDrawable(context.resources, scaledBitmap)
 }
