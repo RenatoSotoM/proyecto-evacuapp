@@ -8,6 +8,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.CircleShape
@@ -21,6 +22,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.proyecto_evacuapp.R
@@ -29,9 +33,14 @@ import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.data.remote.SafeZoneNearbyDto
 import com.example.proyecto_evacuapp.data.repository.IncidentRepository
 import com.example.proyecto_evacuapp.domain.RouteManager
+import com.example.proyecto_evacuapp.domain.engine.DownloadState
 import com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine
+import com.example.proyecto_evacuapp.domain.engine.MapDownloadManager
+import com.example.proyecto_evacuapp.domain.engine.RoutingEngineManager
 import com.example.proyecto_evacuapp.ui.components.*
 import com.example.proyecto_evacuapp.ui.theme.*
+import com.example.proyecto_evacuapp.ui.viewmodel.RoutingViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.proyecto_evacuapp.utils.CustomVoicePlayer
 import com.example.proyecto_evacuapp.utils.MeshtaticSender
 import com.google.android.gms.location.LocationCallback
@@ -116,8 +125,13 @@ fun MapScreen() {
     var recenterTrigger by remember { mutableIntStateOf(0) }
     var overviewTrigger by remember { mutableIntStateOf(0) }
 
-    // Punto de origen donde se realizó el último cálculo de ruta (para re-routing dinámico > 25m)
     var lastRouteCalcPoint by remember { mutableStateOf<GeoPoint?>(null) }
+    var lastNetworkQueryPoint by remember { mutableStateOf<GeoPoint?>(null) }
+
+    // ESTADO DE BÚSQUEDA Y PRUEBAS DEV ONLY
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<com.example.proyecto_evacuapp.data.remote.GeocodingResult>>(emptyList()) }
+    var isDevBlockModeEnabled by remember { mutableStateOf(false) }
 
     // ESTADO DE ZONAS SEGURAS Y PUNTOS DE INTERÉS
     var safeZones by remember { mutableStateOf<List<SafeZoneNearbyDto>>(emptyList()) }
@@ -145,6 +159,19 @@ fun MapScreen() {
     var isCalculatingRoute by remember { mutableStateOf(false) }
     var isAutomaticEvacuation by remember { mutableStateOf(false) }
 
+    // VIEWMODEL DE DESCARGA Y PRECARGA DE CARTOGRAFÍA Y RUTEOS
+    val routingViewModel: RoutingViewModel = viewModel()
+    val mapDownloadState by routingViewModel.downloadState.collectAsState()
+
+    LaunchedEffect(Unit) {
+        coroutineScope.launch(Dispatchers.IO) {
+            val isDownloaded = MapDownloadManager.isMapDownloaded(context)
+            if (isDownloaded) {
+                RoutingEngineManager.initializeEngine(context)
+            }
+        }
+    }
+
     val dynamicRemainingDistanceMeters by remember(currentLatitude, currentLongitude, customRoutePoints) {
         derivedStateOf {
             if (currentLatitude == null || currentLongitude == null || customRoutePoints.isEmpty()) {
@@ -161,6 +188,21 @@ fun MapScreen() {
     var isNavigating by remember { mutableStateOf(false) }
     var currentStepIndex by remember { mutableIntStateOf(0) }
 
+    // DEBOUNCE PARA BÚSQUEDA DE DIRECCIONES (400ms)
+    LaunchedEffect(searchQuery) {
+        val query = searchQuery.trim()
+        if (query.length >= 3) {
+            kotlinx.coroutines.delay(400L)
+            searchResults = com.example.proyecto_evacuapp.data.remote.GeocodingService.searchAddress(
+                query = query,
+                userLat = currentLatitude,
+                userLon = currentLongitude
+            )
+        } else {
+            searchResults = emptyList()
+        }
+    }
+
     // GESTIÓN DEL SERVICIO EN PRIMER PLANO DE NAVEGACIÓN GPS (NavigationForegroundService)
     LaunchedEffect(isNavigating) {
         if (isNavigating) {
@@ -175,27 +217,41 @@ fun MapScreen() {
         }
     }
 
-    // CARGAR INCIDENTES DE LA API Y SINCRONIZAR CON EL ESTADO COMPARTIDO
+    // CONSULTA A API OPTIMIZADA (Sólo al iniciar o al desplazarse > 500m)
     LaunchedEffect(currentLatitude, currentLongitude) {
-        try {
-            val response = IncidentRepository(RetrofitClient.incidentApiService).getIncidents(
-                lat = currentLatitude,
-                lng = currentLongitude
-            )
-            if (response.isSuccessful) {
-                val remoteList = response.body().orEmpty()
-                IncidentSharedState.syncRemoteIncidents(remoteList)
-                Log.d("MAP_INCIDENTS", "Incidentes cargados y sincronizados: ${remoteList.size}")
-            } else {
-                Log.w("MAP_INCIDENTS", "Respuesta no exitosa al obtener incidentes remotos: HTTP ${response.code()}")
+        val lat = currentLatitude ?: return@LaunchedEffect
+        val lon = currentLongitude ?: return@LaunchedEffect
+        val userPt = GeoPoint(lat, lon)
+        val lastLoc = lastNetworkQueryPoint
+
+        if (lastLoc == null || userPt.distanceToAsDouble(lastLoc) >= 500.0) {
+            lastNetworkQueryPoint = userPt
+
+            try {
+                val response = IncidentRepository(RetrofitClient.incidentApiService).getIncidents(lat = lat, lng = lon)
+                if (response.isSuccessful) {
+                    val remoteList = response.body().orEmpty()
+                    IncidentSharedState.syncRemoteIncidents(remoteList)
+                }
+            } catch (e: Exception) {
+                Log.w("MAP_INCIDENTS", "Error al cargar incidentes remotos: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.e("MAP_INCIDENTS", "Error al cargar incidentes remotos: ${e.message}", e)
+
+            try {
+                val szResponse = RetrofitClient.safeZonesApi.getNearbySafeZones(lat, lon, 30000.0)
+                if (szResponse.isSuccessful) {
+                    val apiList = szResponse.body().orEmpty()
+                    if (apiList.isNotEmpty()) {
+                        safeZones = apiList
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("SAFE_ZONES", "Sin red para zonas seguras: ${e.message}")
+            }
         }
     }
 
-    // ZONAS SEGURAS EN SEGUNDO PLANO Y PERSISTENCIA LOCAL EN ROOM
-    // 1. Carga inmediata desde la base de datos local Room
+    // ZONAS SEGURAS EN SEGUNDO PLANO DESDE ROOM LOCAL
     LaunchedEffect(Unit) {
         try {
             val database = EvacuAppDatabase.getInstance(context)
@@ -213,44 +269,9 @@ fun MapScreen() {
                         distance_meters = null
                     )
                 }
-                Log.d("SAFE_ZONES", "Zonas seguras cargadas de Room local: ${safeZones.size}")
             }
         } catch (e: Exception) {
             Log.e("SAFE_ZONES", "Error al leer zonas seguras desde Room: ${e.message}")
-        }
-    }
-
-    // 2. Consulta a la API en segundo plano con persistencia a Room DB
-    LaunchedEffect(currentLatitude, currentLongitude) {
-        val lat = currentLatitude
-        val lng = currentLongitude
-        if (lat != null && lng != null) {
-            try {
-                val response = RetrofitClient.safeZonesApi.getNearbySafeZones(lat, lng, 30000.0)
-                if (response.isSuccessful) {
-                    val apiList = response.body().orEmpty()
-                    if (apiList.isNotEmpty()) {
-                        safeZones = apiList
-                        Log.d("SAFE_ZONES", "Zonas seguras actualizadas de API: ${safeZones.size}")
-
-                        coroutineScope.launch(Dispatchers.IO) {
-                            val database = EvacuAppDatabase.getInstance(context)
-                            val entities = apiList.map { dto ->
-                                SafeZoneEntity(
-                                    name = dto.name,
-                                    description = dto.description ?: "Zona segura",
-                                    capacity = dto.capacity ?: 0,
-                                    latitude = dto.latitude,
-                                    longitude = dto.longitude
-                                )
-                            }
-                            database.safeZoneDao().insertAll(entities)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("SAFE_ZONES", "Sin red para zonas seguras. Mantiene Room: ${e.message}")
-            }
         }
     }
 
@@ -291,7 +312,20 @@ fun MapScreen() {
             val originCoord = startPoint.toRouteCoordinate()
             val destCoord = targetPoint.toRouteCoordinate()
 
-            // 1. INTENTO ONLINE: OSRM (Rutas alternativas calle por calle en OpenStreetMap con vector de movimiento)
+            // 0. ASEGURAR DESCARGA BBOX QUE CUBRA ORIGEN Y DESTINO (30 KM)
+            try {
+                MapDownloadManager.checkAndDownloadOnStartup(
+                    context = context,
+                    userLat = startLat,
+                    userLng = startLon,
+                    destLat = targetPoint.latitude,
+                    destLng = targetPoint.longitude
+                )
+            } catch (e: Exception) {
+                Log.w("MAP_ROUTE", "No fue posible verificar/actualizar BBOX dinámico: ${e.message}")
+            }
+
+            // 1. INTENTO ONLINE: OSRM (Rutas alternativas calle por calle)
             var osrmAlternatives = emptyList<OsrmRouteResponse>()
             try {
                 val currentBearing = UserLocationState.currentBearing
@@ -308,9 +342,6 @@ fun MapScreen() {
                     if (osrmBlockingIncident == null) {
                         routePoints = primaryOsrm.points
                         steps = primaryOsrm.steps
-                        Log.d("MAP_ROUTE_OSRM", "Se obtuvieron ${osrmAlternatives.size} alternativas reales de OSRM calle por calle")
-                    } else {
-                        Log.w("MAP_ROUTE_OSRM", "Ruta principal OSRM cruza reporte de calle bloqueada (${osrmBlockingIncident.type.displayName}). Descartando OSRM bloqueado.")
                     }
                 }
             } catch (e: Exception) {
@@ -349,15 +380,10 @@ fun MapScreen() {
                 Log.e("MAP_ROUTE_OFFLINE", "Error al calcular alternativas locales: ${e.message}")
             }
 
-            // 3. RESPALDO EN LÍNEA INTERMEDIA SI AÚN ESTÁ VACÍA
+            // 3. PROHIBICIÓN TOTAL DE LÍNEA RECTA: Si no hay ruta en la red vial, se descarta y notifica
             if (routePoints.isEmpty()) {
-                val fallbackRoute = mutableListOf<GeoPoint>()
-                fallbackRoute.add(startPoint)
-                val midLat = (startPoint.latitude + targetPoint.latitude) / 2 + 0.0004
-                val midLon = (startPoint.longitude + targetPoint.longitude) / 2 - 0.0004
-                fallbackRoute.add(GeoPoint(midLat, midLon))
-                fallbackRoute.add(targetPoint)
-                routePoints = fallbackRoute
+                if (!isRerouting) Toast.makeText(context, "⚠️ Ruta no encontrada sobre la red vial", Toast.LENGTH_LONG).show()
+                routePoints = emptyList()
             }
 
             if (routePoints.isNotEmpty()) {
@@ -366,7 +392,7 @@ fun MapScreen() {
                 customRoutePoints = routePoints
                 routeAlternatives = alternatives
                 routeSteps = steps
-                currentStepIndex = 0 // Reseteo obligatorio de maniobra al recalcular
+                currentStepIndex = 0
                 isAutomaticEvacuation = automatic
             } else {
                 if (!isRerouting) Toast.makeText(context, "No se pudo generar la ruta", Toast.LENGTH_SHORT).show()
@@ -380,7 +406,6 @@ fun MapScreen() {
         if (customDestination != null && customRoutePoints.isNotEmpty() && !isCalculatingRoute) {
             val blockingIncident = findBlockingIncidentOnRoute(customRoutePoints, sharedIncidents)
             if (blockingIncident != null) {
-                Log.w("MAP_DESVIO", "¡Incidente bloqueante detectado en la ruta! (${blockingIncident.type.displayName}). Desviando...")
                 Toast.makeText(
                     context,
                     "⚠️ Incidente reportado en tu ruta (${blockingIncident.type.displayName}). Recalculando desvío...",
@@ -414,9 +439,6 @@ fun MapScreen() {
                     if (response.isSuccessful) {
                         val list = response.body() ?: emptyList()
                         pointsOfInterest = list
-                        if (list.isEmpty()) {
-                            Toast.makeText(context, "No se encontraron elementos cercanos", Toast.LENGTH_SHORT).show()
-                        }
                     }
                 } catch (e: Exception) {
                     Log.e("POIS", "Error al obtener puntos: ${e.message}")
@@ -424,12 +446,6 @@ fun MapScreen() {
                     isFetchingPois = false
                 }
             }
-        }
-    }
-
-    LaunchedEffect(currentLatitude, currentLongitude) {
-        if (currentLatitude != null && currentLongitude != null) {
-            loadPointsOfInterest(selectedPoiType)
         }
     }
 
@@ -496,7 +512,6 @@ fun MapScreen() {
                         val distMoved = if (lastCalc != null) newGeoPoint.distanceToAsDouble(lastCalc) else Double.MAX_VALUE
 
                         if (distMoved >= 25.0) {
-                            Log.d("MAP_REROUTE", "Usuario se desplazó ${distMoved.toInt()}m (>25m). Recalculando ruta en movimiento...")
                             calculateRouteToPoint(
                                 targetPoint = customDestination!!,
                                 targetName = customDestinationName,
@@ -516,7 +531,6 @@ fun MapScreen() {
                             userBearing = UserLocationState.currentBearing,
                             activeRoutePoints = routeCoords,
                             onTriggerRecalculate = {
-                                Log.w("MAP_HEADING_REROUTE", "Viraje o contravía detectada (>90° por 3s). Recalculando desde nueva dirección...")
                                 Toast.makeText(context, "🔄 Cambio de rumbo detectado. Recalculando ruta...", Toast.LENGTH_SHORT).show()
                                 calculateRouteToPoint(
                                     targetPoint = customDestination!!,
@@ -536,7 +550,6 @@ fun MapScreen() {
 
                         val speedKmH = (currentSpeedMps * 3.6).toInt()
 
-                        // Actualización constante de la notificación persistente en el Foreground Service
                         com.example.proyecto_evacuapp.services.NavigationForegroundService.updateNavigationProgress(
                             context = context,
                             speedKmH = speedKmH,
@@ -553,7 +566,6 @@ fun MapScreen() {
                         if (distanceToStep <= triggerDistanceMeters) {
                             val isArriveStep = currentStep.modifier.lowercase().contains("arrive") || currentStepIndex == routeSteps.size - 1
 
-                            // La instrucción de llegada SOLO se activa si la distancia real al destino es < 15 metros
                             if (isArriveStep) {
                                 val distToDest = customDestination?.let { newGeoPoint.distanceToAsDouble(it) } ?: distanceToStep
                                 if (distToDest <= 15.0) {
@@ -663,20 +675,53 @@ fun MapScreen() {
             },
             onMapTouched = { isTrackingUser = false },
             onMapLongClick = { point: GeoPoint ->
-                if (!isNavigating) {
+                if (isDevBlockModeEnabled) {
+                    // // DEV ONLY: Insertar un bloqueo de calle en tiempo real
+                    val devBlock = SharedIncident(
+                        localId = java.util.UUID.randomUUID().toString(),
+                        type = IncidentType.BLOQUEO_VIAL,
+                        severity = IncidentSeverity.CRITICA,
+                        description = "🚧 Bloqueo de vía de prueba (DEV ONLY)",
+                        latitude = point.latitude,
+                        longitude = point.longitude,
+                        alpha = 10.0,
+                        beta = 1.0,
+                        status = IncidentStatus.VERIFIED,
+                        isOwnReport = true
+                    )
+                    IncidentSharedState.addLocalIncident(devBlock)
+                    Toast.makeText(context, "🚧 Bloqueo de vía creado en (${"%.4f".format(point.latitude)}, ${"%.4f".format(point.longitude)})", Toast.LENGTH_SHORT).show()
+                } else if (!isNavigating) {
                     isTrackingUser = false
                     calculateRouteToPoint(point)
                 }
             }
         )
 
-        // BOTONES FLOTANTES DE CÁMARA (VISTA GENERAL Y RECENTRAR)
+        // BOTONES FLOTANTES DE CÁMARA Y DEV TOOL
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 16.dp, bottom = 240.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            // // DEV ONLY: BOTÓN DE HERRAMIENTAS DE PRUEBA DE BLOQUEO EN VIVO
+            FloatingActionButton(
+                onClick = {
+                    isDevBlockModeEnabled = !isDevBlockModeEnabled
+                    val msg = if (isDevBlockModeEnabled) "DEV MODE: Toca el mapa para crear un bloqueo en vivo" else "DEV MODE desactivado"
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                },
+                containerColor = if (isDevBlockModeEnabled) DangerRed else SurfaceWhite,
+                contentColor = if (isDevBlockModeEnabled) Color.White else EvacuBlue,
+                shape = CircleShape
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Build,
+                    contentDescription = "DEV ONLY: Crear bloqueo en vivo"
+                )
+            }
+
             if (customRoutePoints.isNotEmpty()) {
                 FloatingActionButton(
                     onClick = {
@@ -808,7 +853,8 @@ fun MapScreen() {
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     ConnectivityBadge(
                         text = if (isCalculatingRoute) "Calculando calle..." else "GPS Activo",
@@ -816,12 +862,159 @@ fun MapScreen() {
                         backgroundColor = SafeGreenLight,
                         icon = Icons.Default.CloudDone
                     )
-                    ConnectivityBadge(
-                        text = if (hasLocationPermission) "Señal GPS Ok" else "Sin GPS",
-                        color = EvacuBlue,
-                        backgroundColor = EvacuBlueLight,
-                        icon = Icons.Default.LocationOn
-                    )
+
+                    // BANDA DE ESTADO DE MAPA Y BOTÓN DE PRECARGA MANUAL
+                    when (val state = mapDownloadState) {
+                        is DownloadState.Downloading -> {
+                            Surface(
+                                color = WarningAmberLight,
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(14.dp),
+                                        strokeWidth = 2.dp,
+                                        color = WarningAmber
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Descargando: ${state.progress}%",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextPrimary
+                                    )
+                                }
+                            }
+                        }
+                        is DownloadState.Downloaded -> {
+                            ConnectivityBadge(
+                                text = "Mapa Offline Listo",
+                                color = SafeGreen,
+                                backgroundColor = SafeGreenLight,
+                                icon = Icons.Default.DownloadDone
+                            )
+                        }
+                        else -> {
+                            Button(
+                                onClick = {
+                                    routingViewModel.startFullPreload(
+                                        context = context,
+                                        lat = currentLatitude ?: -33.4489,
+                                        lon = currentLongitude ?: -70.6693
+                                    )
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = EvacuBlue),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Precargar Mapa",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // BARRA DE BÚSQUEDA DE DIRECCIONES ("¿Adónde vas?")
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                ) {
+                    Column {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("¿Adónde vas? Buscar dirección...") },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Buscar") },
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = {
+                                        searchQuery = ""
+                                        searchResults = emptyList()
+                                    }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "Limpiar")
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(
+                                onSearch = {
+                                    coroutineScope.launch {
+                                        val query = searchQuery.trim()
+                                        if (query.isNotEmpty()) {
+                                            val results = com.example.proyecto_evacuapp.data.remote.GeocodingService.searchAddress(
+                                                query = query,
+                                                userLat = currentLatitude,
+                                                userLon = currentLongitude
+                                            )
+                                            if (results.isNotEmpty()) {
+                                                val first = results.first()
+                                                searchQuery = ""
+                                                searchResults = emptyList()
+                                                isTrackingUser = false
+                                                val destPoint = GeoPoint(first.latitude, first.longitude)
+                                                val shortName = first.displayName.split(",").firstOrNull() ?: "Destino"
+                                                calculateRouteToPoint(destPoint, shortName)
+                                            } else {
+                                                Toast.makeText(context, "Ruta no encontrada sobre la red vial o dirección no válida.", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    }
+                                }
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = EvacuBlue,
+                                unfocusedBorderColor = Color.Transparent
+                            )
+                        )
+
+                        if (searchResults.isNotEmpty()) {
+                            Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 8.dp)) {
+                                searchResults.forEach { result ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                searchQuery = ""
+                                                searchResults = emptyList()
+                                                isTrackingUser = false
+                                                val destPoint = GeoPoint(result.latitude, result.longitude)
+                                                val shortName = result.displayName.split(",").firstOrNull() ?: "Destino"
+                                                calculateRouteToPoint(destPoint, shortName)
+                                            }
+                                            .padding(vertical = 8.dp, horizontal = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.Place, contentDescription = null, tint = EvacuBlue)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = result.displayName,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = TextPrimary,
+                                            maxLines = 2
+                                        )
+                                    }
+                                    HorizontalDivider(color = Color(0xFFE2E8F0))
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // BARRA HORIZONTAL DE FILTROS DE PUNTOS DE INTERÉS
@@ -908,7 +1101,6 @@ fun MapScreen() {
                 .align(Alignment.BottomCenter),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Panel de selección de alternativas de ruta (Ruta Rápida, Segura, Accesible)
             if (routeAlternatives.isNotEmpty() && !isNavigating) {
                 RouteOptionsPanel(
                     routes = routeAlternatives,

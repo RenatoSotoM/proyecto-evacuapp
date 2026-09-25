@@ -24,7 +24,8 @@ data class GraphEdge(
     var isBlocked: Boolean,
     val bidirectional: Boolean,
     var blockingIncidentLocalId: String? = null,
-    val highwayType: String = "residential"
+    val highwayType: String = "residential",
+    val geometry: List<RouteCoordinate> = emptyList()
 )
 
 data class PathResult(
@@ -323,7 +324,38 @@ class RoadGraph {
             maxAccessibility = maxOf(maxAccessibility, edge.accessibilityPenalty)
         }
         val totalDuration = totalDistance / speedMetersPerSecondFor(profile)
-        val points = nodePath.mapNotNull { nodes[it]?.coordinate }
+        val points = ArrayList<RouteCoordinate>()
+        for (edgeId in edgePath) {
+            val edge = edges.getValue(edgeId)
+            if (edge.geometry.isNotEmpty()) {
+                if (points.isEmpty()) {
+                    points.addAll(edge.geometry)
+                } else {
+                    val tail = points.last()
+                    val startGeo = edge.geometry.first()
+                    val endGeo = edge.geometry.last()
+                    if (haversineMeters(tail, startGeo) < 5.0) {
+                        points.addAll(edge.geometry.drop(1))
+                    } else if (haversineMeters(tail, endGeo) < 5.0) {
+                        points.addAll(edge.geometry.reversed().drop(1))
+                    } else {
+                        points.addAll(edge.geometry)
+                    }
+                }
+            } else {
+                val fromCoord = nodes[edge.fromId]?.coordinate
+                val toCoord = nodes[edge.toId]?.coordinate
+                if (fromCoord != null && (points.isEmpty() || points.last() != fromCoord)) {
+                    points.add(fromCoord)
+                }
+                if (toCoord != null && (points.isEmpty() || points.last() != toCoord)) {
+                    points.add(toCoord)
+                }
+            }
+        }
+        if (points.isEmpty()) {
+            points.addAll(nodePath.mapNotNull { nodes[it]?.coordinate })
+        }
 
         return PathResult(
             edgeIds = edgePath,

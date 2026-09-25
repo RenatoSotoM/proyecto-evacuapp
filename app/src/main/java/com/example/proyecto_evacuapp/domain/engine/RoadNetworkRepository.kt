@@ -1,13 +1,20 @@
 package com.example.proyecto_evacuapp.domain.engine
 
+import android.content.Context
 import android.util.Log
+import com.google.gson.Gson
+import com.example.proyecto_evacuapp.data.remote.MapGraphResponseDto
 import com.example.proyecto_evacuapp.ui.components.IncidentEntity
 import com.example.proyecto_evacuapp.ui.components.IncidentSeverity
 import com.example.proyecto_evacuapp.ui.components.IncidentStatus
 import com.example.proyecto_evacuapp.ui.components.IncidentType
 import com.example.proyecto_evacuapp.ui.components.RouteCoordinate
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileReader
 
 private const val TAG = "RoadNetworkRepository"
 private const val MAX_MATCH_DISTANCE_METERS = 60.0
@@ -27,59 +34,84 @@ private fun parseAffectedSegmentIds(raw: String): Set<String> =
     raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
 /**
- * Repositorio optimizado en memoria: construye y carga la red vial dinámica
- * al vuelo para cualquier par de coordenadas (origen y destino), evitando
- * cualquier conflicto de base de datos o IDs duplicados.
+ * Repositorio espacial: Deserializa directamente el JSON comprimido del grafo de 30 km del backend NestJS.
+ * REGLA ESTRICTA: Si el JSON está vacío o no hay red local guardada, devuelve emptyList() y alerta
+ * 'Ruta no encontrada sobre la red vial'. NUNCA dibuja líneas rectas ni fallbacks simplificados.
  */
 class RoadNetworkRepository {
     private val graph = RoadGraph()
     private val mutex = Mutex()
+    private var lastLoadedCenter: RouteCoordinate? = null
 
-    /**
-     * Genera y carga la red vial dinámica en memoria para la ruta actual.
-     */
-    suspend fun ensureLoadedForRoute(origin: RouteCoordinate, destination: RouteCoordinate) {
-        mutex.withLock {
-            // 1. Generamos la malla dinámica directamente en memoria con el seed
-            val seed = PilotRoadNetworkSeed.buildDynamic(origin, destination)
+    suspend fun ensureLoadedForRoute(context: Context?, origin: RouteCoordinate, destination: RouteCoordinate) {
+        withContext(Dispatchers.IO) {
+            val center = lastLoadedCenter
+            val distFromCenterMeters = if (center != null) haversineMeters(origin, center) else Double.MAX_VALUE
 
-            // 2. Convertimos el seed a los modelos del grafo en memoria
-            val nodes = seed.nodes.map { GraphNode(it.id, RouteCoordinate(it.latitude, it.longitude)) }
-            val edges = seed.edges.map {
-                GraphEdge(
-                    id = it.id,
-                    fromId = it.fromNodeId,
-                    toId = it.toNodeId,
-                    distanceMeters = it.distanceMeters,
-                    riskWeight = it.riskWeight,
-                    accessibilityPenalty = it.accessibilityPenalty,
-                    isBlocked = it.isBlocked,
-                    bidirectional = it.isBidirectional,
-                    blockingIncidentLocalId = it.blockingIncidentLocalId
-                )
+            if (center == null || distFromCenterMeters >= 25_000.0 || graph.isEmpty()) {
+                mutex.withLock {
+                    var loadedFromJson = false
+                    if (context != null) {
+                        val jsonFile = MapDownloadManager.getLocalMapFile(context)
+                        val parsed = parseJsonFileToGraph(jsonFile)
+                        if (parsed != null && parsed.first.isNotEmpty() && parsed.second.isNotEmpty()) {
+                            graph.load(parsed.first, parsed.second)
+                            loadedFromJson = true
+                            Log.d(TAG, "Grafo vectorial cargado con éxito desde JSON local: ${parsed.first.size} nodos, ${parsed.second.size} aristas.")
+                        }
+                    }
+
+                    if (!loadedFromJson) {
+                        Log.e(TAG, "FALLO CRÍTICO: Archivo JSON local de grafo no encontrado o vacío. PROHIBIDO LÍNEA RECTA. Grafo vacío.")
+                        graph.load(emptyList(), emptyList())
+                    }
+
+                    lastLoadedCenter = origin
+                }
             }
-
-            // 3. Cargamos el grafo limpiamente (reemplaza cualquier estado anterior)
-            graph.load(nodes, edges)
-            Log.d(TAG, "Red vial dinámica cargada en memoria: ${nodes.size} nodos, ${edges.size} aristas.")
         }
     }
 
-    suspend fun ensureLoaded() {
-        // Al ser completamente dinámico por ruta, no requiere precarga estática.
+    private fun parseJsonFileToGraph(file: File): Pair<List<GraphNode>, List<GraphEdge>>? {
+        if (!file.exists() || file.length() == 0L) return null
+        try {
+            val response = FileReader(file).use { reader ->
+                Gson().fromJson(reader, MapGraphResponseDto::class.java)
+            }
+
+            val nodesList = response?.nodes?.map {
+                GraphNode(id = it.id, coordinate = RouteCoordinate(it.lat, it.lon))
+            } ?: emptyList()
+
+            val edgesList = response?.edges?.map { edgeDto ->
+                val geometryCoords = edgeDto.geometry?.map { RouteCoordinate(it.lat, it.lon) } ?: emptyList()
+                GraphEdge(
+                    id = edgeDto.id,
+                    fromId = edgeDto.fromNodeId,
+                    toId = edgeDto.toNodeId,
+                    distanceMeters = edgeDto.distanceMeters,
+                    riskWeight = edgeDto.riskWeight ?: 0.0,
+                    accessibilityPenalty = edgeDto.accessibilityPenalty ?: 0.05,
+                    isBlocked = edgeDto.isBlocked ?: false,
+                    bidirectional = edgeDto.bidirectional ?: true,
+                    highwayType = edgeDto.highwayType ?: "residential",
+                    geometry = geometryCoords
+                )
+            } ?: emptyList()
+
+            if (nodesList.isNotEmpty() && edgesList.isNotEmpty()) {
+                return Pair(nodesList, edgesList)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing local graph JSON: ${e.message}", e)
+        }
+        return null
     }
 
-    fun graphSnapshot(): RoadGraph = graph
-
-    /**
-     * Aplica el efecto de los incidentes sobre las aristas en memoria segun su fiabilidad y severidad.
-     */
-    suspend fun applyIncidents(incidents: List<IncidentEntity>): Boolean {
+    suspend fun applyIncidents(incidents: List<IncidentEntity>): Boolean = withContext(Dispatchers.IO) {
         var anyChanged = false
-
         mutex.withLock {
             val activeIncidentIds = HashSet<String>()
-
             for (incident in incidents) {
                 val status = parseIncidentStatus(incident.status)
                 val type = IncidentType.fromApiValue(incident.type)
@@ -90,67 +122,20 @@ class RoadNetworkRepository {
                 val isBlockingType = type in RISK_INCIDENT_TYPES || type == IncidentType.RUTA_INACCESIBLE
 
                 if (isBlockingType && (isVerified || isCriticalOrHigh)) {
-                    // 1. BLOQUEO COMPLETO (Costo Infinito C(e) = infinity)
                     activeIncidentIds += incident.localId
                     val targetEdges = resolveAffectedEdges(incident)
-                    if (targetEdges.isEmpty()) continue
-
                     for (edge in targetEdges) {
                         val changed = if (type == IncidentType.RUTA_INACCESIBLE) {
                             graph.applyEdgeAccessibility(edge.id, penalty = 1.0, incidentLocalId = incident.localId)
                         } else {
-                            graph.applyEdgeRisk(
-                                edge.id,
-                                riskWeight = 1.0,
-                                blocked = true,
-                                incidentLocalId = incident.localId
-                            )
+                            graph.applyEdgeRisk(edge.id, riskWeight = 1.0, blocked = true, incidentLocalId = incident.localId)
                         }
-                        if (changed) {
-                            anyChanged = true
-                            Log.d(TAG, "Arista ${edge.id} BLOQUEADA por incidente VERIFIED/ALTA/CRITICA (${incident.localId})")
-                        }
-                    }
-                } else if (isBlockingType && (status == IncidentStatus.PROBABLE || status == IncidentStatus.PENDING || status == IncidentStatus.LOCAL_PENDING)) {
-                    // 2. INCIDENTE EN REVISIÓN / MENOR SEVERIDAD: Incrementa el costo de riesgo R(e)
-                    activeIncidentIds += incident.localId
-                    val targetEdges = resolveAffectedEdges(incident)
-                    if (targetEdges.isEmpty()) continue
-
-                    for (edge in targetEdges) {
-                        val changed = graph.applyEdgeRisk(
-                            edge.id,
-                            riskWeight = 0.8,
-                            blocked = false, // Sin bloqueo absoluto, pero alto riesgo R(e)
-                            incidentLocalId = incident.localId
-                        )
-                        if (changed) {
-                            anyChanged = true
-                            Log.d(TAG, "Arista ${edge.id} asignada riesgo R(e)=0.8 por reporte en revisión (${incident.localId})")
-                        }
-                    }
-                }
-            }
-
-            // Liberar aristas cuyo incidente ya no aplica
-            val blockedByStaleIncident = graph.allEdges()
-                .mapNotNull { it.blockingIncidentLocalId }
-                .toSet()
-                .filter { it !in activeIncidentIds }
-
-            for (staleIncidentId in blockedByStaleIncident) {
-                val relatedEdges = graph.findEdgesByIncidentId(staleIncidentId)
-                for (edge in relatedEdges) {
-                    val changed = graph.clearEdgeRisk(edge.id)
-                    if (changed) {
-                        anyChanged = true
-                        Log.d(TAG, "Arista ${edge.id} liberada: incidente $staleIncidentId desactivado")
+                        if (changed) anyChanged = true
                     }
                 }
             }
         }
-
-        return anyChanged
+        anyChanged
     }
 
     fun findMatchingEdge(
@@ -174,9 +159,8 @@ class RoadNetworkRepository {
             return explicitIds.mapNotNull { graph.edgeById(it) }
         }
         val point = RouteCoordinate(incident.latitude, incident.longitude)
-        // Buffer de bloqueo de 20 metros para cubrir esquinas e intersecciones asociadas al reporte
-        val affectedInRadius = graph.edgesWithinRadius(point, radiusMeters = 20.0)
-        Log.d(TAG, "Reporte ${incident.localId} en (${incident.latitude}, ${incident.longitude}) bloqueó ${affectedInRadius.size} aristas en radio de 20m")
-        return affectedInRadius
+        return graph.edgesWithinRadius(point, radiusMeters = 20.0)
     }
+
+    fun graphSnapshot(): RoadGraph = graph
 }

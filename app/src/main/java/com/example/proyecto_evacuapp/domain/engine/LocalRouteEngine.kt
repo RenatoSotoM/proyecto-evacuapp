@@ -8,21 +8,23 @@ import com.example.proyecto_evacuapp.ui.components.LocalRouteResult
 import com.example.proyecto_evacuapp.ui.components.RouteCoordinate
 import com.example.proyecto_evacuapp.ui.components.RouteMobilityProfile
 import com.example.proyecto_evacuapp.ui.components.RouteVariant
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.osmdroid.util.GeoPoint
 import kotlin.math.roundToInt
 
 private const val TAG = "LocalRouteEngine"
 
 /**
- * Motor de ruteo local offline-first.
- * Aplica restricciones duras (Hard Constraints) de bloqueo para todas las variantes de ruta
- * y garantiza la generación de las 4 opciones seleccionables (Ruta Segura, Ruta Alternativa 1, Ruta Alternativa 2, Ruta Offline).
+ * Motor de ruteo local offline-first instrumentado con EVAC_DEBUG.
  */
 object LocalRouteEngine {
 
     private var repository: RoadNetworkRepository? = null
+    private var appContext: Context? = null
 
     fun initialize(context: Context) {
+        appContext = context.applicationContext
         if (repository != null) return
         repository = RoadNetworkRepository()
         Log.d(TAG, "LocalRouteEngine inicializado")
@@ -50,11 +52,7 @@ object LocalRouteEngine {
     }
 
     /**
-     * Calcula las 4 opciones obligatorias dentro del radio de búsqueda:
-     * 1. Ruta Segura (SEGURA): Dijkstra evitando 100% riesgos y bloqueos (Restricción Dura HARD_BLOCK_COST).
-     * 2. Ruta Alternativa 1 (ALTERNATIVA_1): Aplica penalización de +10000.0m a las aristas de Ruta Segura.
-     * 3. Ruta Alternativa 2 (ALTERNATIVA_2): Aplica penalización a las aristas de Ruta Segura y Ruta Alternativa 1.
-     * 4. Ruta Offline (OFFLINE): Calculada puramente usando el grafo local en Room DB / memoria.
+     * Calcula las opciones de ruta instrumentadas con EVAC_DEBUG para diagnóstico paso a paso.
      */
     suspend fun calculateRouteAlternatives(
         origin: RouteCoordinate,
@@ -62,26 +60,34 @@ object LocalRouteEngine {
         profile: RouteMobilityProfile,
         blockedSegmentIds: Set<String> = emptySet(),
         startBearing: Float? = null
-    ): List<LocalRouteResult> {
+    ): List<LocalRouteResult> = withContext(Dispatchers.IO) {
         val repo = requireRepository()
-        repo.ensureLoadedForRoute(origin, destination)
+        repo.ensureLoadedForRoute(appContext, origin, destination)
         val graph = repo.graphSnapshot()
 
         if (graph.isEmpty()) {
-            Log.w(TAG, "Grafo vial vacío, no es posible calcular rutas")
-            return emptyList()
+            Log.d("EVAC_DEBUG", "LocalRouteEngine: [ABORT] Graph is empty! Road network was not loaded or OSM parsing failed.")
+            return@withContext emptyList()
         }
 
         val startNode = graph.nearestNode(origin)
+        val startDist = if (startNode != null) haversineMeters(origin, startNode.coordinate) else -1.0
+        Log.d("EVAC_DEBUG", "LocalRouteEngine ORIGIN -> Coords: (${origin.latitude}, ${origin.longitude}) | NearestNode: ${startNode?.id ?: "NONE"} | Distance: ${startDist}m")
+
         val endNode = graph.nearestNode(destination)
+        val endDist = if (endNode != null) haversineMeters(destination, endNode.coordinate) else -1.0
+        Log.d("EVAC_DEBUG", "LocalRouteEngine DESTINATION -> Coords: (${destination.latitude}, ${destination.longitude}) | NearestNode: ${endNode?.id ?: "NONE"} | Distance: ${endDist}m")
+
         if (startNode == null || endNode == null) {
-            Log.w(TAG, "No se encontraron nodos cercanos al origen/destino")
-            return emptyList()
+            Log.d("EVAC_DEBUG", "LocalRouteEngine: [ABORT] Origin node (${startNode?.id}) or Destination node (${endNode?.id}) not found within range.")
+            return@withContext emptyList()
         }
+
+        Log.d("EVAC_DEBUG", "LocalRouteEngine DIJKSTRA START -> startNodeId: ${startNode.id}, endNodeId: ${endNode.id}")
 
         val sessionPenalties = blockedSegmentIds.associateWith { HARD_BLOCK_COST }
 
-        // 1. RUTA 1: RUTA SEGURA (100% libre de riesgos y bloqueos con restricción dura C(e) = infinity)
+        // 1. RUTA SEGURA
         val segura = graph.shortestPath(
             startNodeId = startNode.id,
             endNodeId = endNode.id,
@@ -91,8 +97,9 @@ object LocalRouteEngine {
             edgePenalties = sessionPenalties,
             startBearing = startBearing
         )
+        Log.d("EVAC_DEBUG", "LocalRouteEngine DIJKSTRA RESULT -> Segura path found: ${segura != null}, edgeCount: ${segura?.edgeIds?.size ?: 0}, distance: ${segura?.distanceMeters ?: 0.0}m")
 
-        // 2. RUTA 2: RUTA ALTERNATIVA 1 (Penaliza +10000.0m las aristas de Ruta Segura)
+        // 2. RUTA ALTERNATIVA 1
         val seguraEdgePenalties = sessionPenalties + (segura?.edgeIds?.associateWith { 10_000.0 } ?: emptyMap())
         var alt1 = graph.shortestPath(
             startNodeId = startNode.id,
@@ -107,7 +114,7 @@ object LocalRouteEngine {
             alt1 = segura
         }
 
-        // 3. RUTA 3: RUTA ALTERNATIVA 2 (Penaliza aristas de Ruta Segura y Ruta Alternativa 1)
+        // 3. RUTA ALTERNATIVA 2
         val alt2Penalties = sessionPenalties +
                 (segura?.edgeIds?.associateWith { 10_000.0 } ?: emptyMap()) +
                 (alt1?.edgeIds?.associateWith { 10_000.0 } ?: emptyMap())
@@ -124,7 +131,7 @@ object LocalRouteEngine {
             alt2 = alt1 ?: segura
         }
 
-        // 4. RUTA 4: RUTA OFFLINE (LOCAL) (Generada estrictamente usando el grafo local Room DB / memoria)
+        // 4. RUTA OFFLINE (LOCAL)
         val offline = graph.shortestPath(
             startNodeId = startNode.id,
             endNodeId = endNode.id,
@@ -173,10 +180,11 @@ object LocalRouteEngine {
         val count = distinctResults.size
 
         if (count == 0) {
+            Log.d("EVAC_DEBUG", "LocalRouteEngine: [ABORT] Graph is disconnected or Dijkstra returned no valid paths between origin (${startNode.id}) and destination (${endNode.id}).")
             val isolatedResult = emptyRouteResult(origin, destination).copy(
                 statusMessage = "⚠️ Sin acceso: No existen rutas posibles hacia el destino debido a bloqueos totales."
             )
-            return listOf(isolatedResult)
+            return@withContext listOf(isolatedResult)
         }
 
         val statusMessage = if (count < 4) {
@@ -185,7 +193,7 @@ object LocalRouteEngine {
             null
         }
 
-        return distinctResults.map { it.copy(statusMessage = statusMessage) }
+        distinctResults.map { it.copy(statusMessage = statusMessage) }
     }
 
     private fun PathResult.toRouteResult(
@@ -202,7 +210,7 @@ object LocalRouteEngine {
             points = points,
             distanceMeters = distanceMeters,
             durationSeconds = durationSeconds,
-            engineName = "Local road graph (offline)",
+            engineName = "Local road graph (offline OSM 30km)",
             warnings = warnings,
             variant = variant,
             label = label,
@@ -215,7 +223,7 @@ object LocalRouteEngine {
         points = listOf(origin, destination),
         distanceMeters = 0.0,
         durationSeconds = 0.0,
-        engineName = "Local road graph (offline)",
+        engineName = "Local road graph (offline OSM 30km)",
         warnings = listOf("No fue posible calcular una ruta sobre el grafo local."),
         variant = RouteVariant.SEGURA,
         label = "Ruta no disponible"

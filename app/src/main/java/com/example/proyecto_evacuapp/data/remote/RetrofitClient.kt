@@ -1,6 +1,9 @@
 package com.example.proyecto_evacuapp.data.remote
 
 import android.os.Build
+import android.util.Log
+import com.google.gson.GsonBuilder
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
@@ -40,12 +43,37 @@ object RetrofitClient {
     // Almacenamiento temporal en memoria del Token JWT
     var authToken: String? = null
 
+    /**
+     * Instancia permisiva de Gson para manejar respuestas grandes/comprimidas sin lanzar MalformedJsonException
+     */
+    private val lenientGson = GsonBuilder()
+        .setLenient()
+        .create()
+
+    private val loggingInterceptor = Interceptor { chain ->
+        val request = chain.request()
+        Log.d("EVAC_DEBUG", "HTTP Request --> URL: ${request.url}")
+        val startTime = System.nanoTime()
+        try {
+            val response = chain.proceed(request)
+            val durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime)
+            Log.d("EVAC_DEBUG", "HTTP Response <-- URL: ${request.url} | Status: ${response.code} (${durationMs}ms)")
+            response
+        } catch (e: Exception) {
+            Log.e("EVAC_DEBUG", "HTTP Exception <-- URL: ${request.url} | Error: ${e.message}", e)
+            throw e
+        }
+    }
+
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .addInterceptor(loggingInterceptor)
         .addInterceptor { chain ->
             val originalRequest = chain.request()
             val requestBuilder = originalRequest.newBuilder()
+                .addHeader("Accept", "application/json")
 
             // Adjunta el Token automáticamente si existe y no viene en la petición
             authToken?.let { token ->
@@ -61,7 +89,7 @@ object RetrofitClient {
         Retrofit.Builder()
             .baseUrl(BASE_URL)
             .client(okHttpClient)
-            .addConverterFactory(GsonConverterFactory.create())
+            .addConverterFactory(GsonConverterFactory.create(lenientGson)) // 👈 Gson Permisivo Activado
             .build()
     }
 
@@ -88,5 +116,9 @@ object RetrofitClient {
     // Módulo de Emergencias Oficiales (Polígonos de zona roja)
     val emergenciesApiService: EmergenciesApiService by lazy {
         retrofit.create(EmergenciesApiService::class.java)
+    }
+
+    val mapGraphApiService: MapGraphApiService by lazy {
+        retrofit.create(MapGraphApiService::class.java)
     }
 }

@@ -271,16 +271,8 @@ suspend fun fetchOSRMRoute(
             Log.e("OSRM_ROUTE", "Modo offline detectado: ${e.localizedMessage}")
         }
 
-        // --- RESPALDO OFFLINE CON MÚLTIPLES PUNTOS ---
-        // Genera 10 puntos intermedios para que la ruta tenga tamaño > 2 y se pinte en el mapa
-        val fallbackPoints = mutableListOf<GeoPoint>()
-        val steps = 10
-        for (i in 0..steps) {
-            val lat = start.latitude + (destination.latitude - start.latitude) * (i.toDouble() / steps)
-            val lon = start.longitude + (destination.longitude - start.longitude) * (i.toDouble() / steps)
-            fallbackPoints.add(GeoPoint(lat, lon))
-        }
-        fallbackPoints
+        // --- PROHIBICIÓN TOTAL DE LÍNEA RECTA OFFLINE ---
+        emptyList()
     }
 }
 
