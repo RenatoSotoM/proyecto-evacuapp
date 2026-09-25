@@ -27,13 +27,18 @@ enum class RouteMobilityProfile {
 }
 
 /**
- * Variante de ruta calculada por LocalRouteEngine.calculateRouteAlternatives.
- * PRINCIPAL: menor costo general. SEGURA: evita tramos con riesgo VERIFIED/PROBABLE.
- * ACCESIBLE: minimiza la penalización de accesibilidad para perfiles vulnerables.
+ * Variantes de ruta calculadas por LocalRouteEngine.calculateRouteAlternatives.
+ * SEGURA: 100% libre de riesgos/bloqueos.
+ * ALTERNATIVA_1: Vía secundaria desviando aristas de Ruta Segura.
+ * ALTERNATIVA_2: Tercera opción por vías secundarias.
+ * OFFLINE: Generada puramente desde el grafo local en Room DB / memoria.
  */
 enum class RouteVariant {
-    PRINCIPAL,
     SEGURA,
+    ALTERNATIVA_1,
+    ALTERNATIVA_2,
+    OFFLINE,
+    PRINCIPAL,
     ACCESIBLE
 }
 
@@ -43,11 +48,11 @@ data class LocalRouteResult(
     val durationSeconds: Double,
     val engineName: String,
     val warnings: List<String> = emptyList(),
-    // Campos nuevos con default: no rompen construcciones existentes de LocalRouteResult.
-    val variant: RouteVariant = RouteVariant.PRINCIPAL,
+    val variant: RouteVariant = RouteVariant.SEGURA,
     val label: String = "Ruta",
     val avoidsVerifiedRisk: Boolean = true,
-    val maxAccessibilityPenaltyOnPath: Double = 0.0
+    val maxAccessibilityPenaltyOnPath: Double = 0.0,
+    val statusMessage: String? = null
 )
 
 data class LocalIncident(

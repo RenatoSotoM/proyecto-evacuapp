@@ -15,12 +15,16 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Accessible
+import androidx.compose.material.icons.filled.AltRoute
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -42,9 +46,7 @@ import com.example.proyecto_evacuapp.ui.theme.WarningAmber
 import com.example.proyecto_evacuapp.ui.theme.WarningAmberLight
 
 /**
- * Panel deslizable horizontal con las alternativas de ruta calculadas por RouteManager /
- * LocalRouteEngine.calculateRouteAlternatives. Se ubica sobre el panel de acción inferior
- * existente en MapScreen (por ejemplo, justo arriba del Card de "IR" / "CANCELAR").
+ * Panel deslizable horizontal con las alternativas de ruta calculadas por RouteManager / LocalRouteEngine.
  */
 @Composable
 fun RouteOptionsPanel(
@@ -55,10 +57,39 @@ fun RouteOptionsPanel(
 ) {
     if (routes.isEmpty()) return
 
+    val statusMsg = routes.firstOrNull()?.statusMessage
+
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        if (!statusMsg.isNullOrBlank()) {
+            Surface(
+                color = WarningAmberLight,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, WarningAmber),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = WarningAmber
+                    )
+                    Text(
+                        text = statusMsg,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
+                    )
+                }
+            }
+        }
+
         Text(
             text = "Elige tu ruta de evacuación",
             style = MaterialTheme.typography.titleSmall,
@@ -86,24 +117,33 @@ private data class RouteVisualStyle(
     val badgeText: String?
 )
 
+/**
+ * Mapeo exhaustivo de RouteVariant a su estilo visual.
+ */
 private fun styleFor(route: LocalRouteResult): RouteVisualStyle = when (route.variant) {
-    RouteVariant.PRINCIPAL -> RouteVisualStyle(
-        icon = Icons.Default.Route,
-        accentColor = EvacuBlue,
-        backgroundColor = EvacuBlueLight,
-        badgeText = null
-    )
     RouteVariant.SEGURA -> RouteVisualStyle(
         icon = Icons.Default.Shield,
         accentColor = SafeGreen,
         backgroundColor = SafeGreenLight,
-        badgeText = if (route.avoidsVerifiedRisk) "Evita riesgo verificado" else "Menor riesgo posible"
+        badgeText = "100% libre de riesgo"
     )
-    RouteVariant.ACCESIBLE -> RouteVisualStyle(
-        icon = Icons.Default.Accessible,
+    RouteVariant.ALTERNATIVA_1, RouteVariant.PRINCIPAL -> RouteVisualStyle(
+        icon = Icons.Default.AltRoute,
+        accentColor = EvacuBlue,
+        backgroundColor = EvacuBlueLight,
+        badgeText = "Vías paralelas"
+    )
+    RouteVariant.ALTERNATIVA_2 -> RouteVisualStyle(
+        icon = Icons.Default.Route,
+        accentColor = Color(0xFF7C3AED),
+        backgroundColor = Color(0xFFF3E8FF),
+        badgeText = "Tercera vía alternativa"
+    )
+    RouteVariant.OFFLINE, RouteVariant.ACCESIBLE -> RouteVisualStyle(
+        icon = Icons.Default.OfflinePin,
         accentColor = WarningAmber,
         backgroundColor = WarningAmberLight,
-        badgeText = "Ruta accesible"
+        badgeText = "Grafo local Room"
     )
 }
 

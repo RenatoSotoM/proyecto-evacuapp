@@ -27,4 +27,18 @@ interface IncidentDao {
         """
     )
     suspend fun deleteByLocalId(localId: String)
+
+    // --- NUEVOS MÉTODOS PARA PRUEBAS Y LIMPIEZA ---
+
+    /**
+     * Elimina TODOS los reportes registrados en la base de datos local.
+     */
+    @Query("DELETE FROM incidents")
+    suspend fun deleteAllIncidents()
+
+    /**
+     * Obtiene la cantidad actual de reportes para verificar que el conteo sea 0.
+     */
+    @Query("SELECT COUNT(*) FROM incidents")
+    suspend fun getIncidentCount(): Int
 }

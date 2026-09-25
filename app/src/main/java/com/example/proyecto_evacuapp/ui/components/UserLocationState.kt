@@ -8,4 +8,6 @@ import org.osmdroid.util.GeoPoint
 object UserLocationState {
     // Variable global observable por toda la App (MapScreen y RoutesScreen)
     var currentLocation by mutableStateOf<GeoPoint?>(null)
+    var currentBearing by mutableStateOf<Float?>(null)
+    var currentSpeedMps by mutableStateOf<Double>(0.0)
 }

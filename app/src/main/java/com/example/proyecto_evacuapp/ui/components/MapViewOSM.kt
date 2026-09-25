@@ -29,11 +29,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.proyecto_evacuapp.data.remote.PointOfInterestResponse
 import com.example.proyecto_evacuapp.data.remote.SafeZoneNearbyDto
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapEventsReceiver
-import org.osmdroid.tileprovider.cachemanager.CacheManager
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
@@ -55,11 +52,14 @@ fun MapViewOSM(
     overviewTrigger: Int = 0,
     destinationPoint: GeoPoint? = null,
     routePoints: List<GeoPoint> = emptyList(),
+    routeAlternatives: List<LocalRouteResult> = emptyList(),
+    selectedRouteVariant: LocalRouteResult? = null,
     incidents: List<SharedIncident> = emptyList(),
     safeZones: List<SafeZoneNearbyDto> = emptyList(),
     pointsOfInterest: List<PointOfInterestResponse> = emptyList(),
     onPoiSelected: (PointOfInterestResponse) -> Unit = {},
     onSafeZoneSelected: (GeoPoint, String) -> Unit = { _, _ -> },
+    onRouteVariantSelected: (LocalRouteResult) -> Unit = {},
     onMapTouched: () -> Unit = {},
     onMapLongClick: (GeoPoint) -> Unit = {}
 ) {
@@ -83,8 +83,8 @@ fun MapViewOSM(
         }
     }
 
-    // Overlay para capturar toques largos en el mapa
-    val eventsOverlay = remember(mapView) {
+    // Overlay para capturar toques en el mapa
+    remember(mapView) {
         val receiver = object : MapEventsReceiver {
             override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
                 onMapTouched()
@@ -101,28 +101,22 @@ fun MapViewOSM(
         }
     }
 
-    // Capa independiente para pintar las Zonas Seguras
     val safeZonesOverlay = remember(mapView) {
-        FolderOverlay().also {
-            mapView.overlays.add(it)
-        }
+        FolderOverlay().also { mapView.overlays.add(it) }
     }
 
-    // Capa independiente para pintar los Puntos de Interés
     val poiOverlay = remember(mapView) {
-        FolderOverlay().also {
-            mapView.overlays.add(it)
-        }
+        FolderOverlay().also { mapView.overlays.add(it) }
     }
 
-    // Capa independiente para pintar Incidentes
     val incidentsOverlay = remember(mapView) {
-        FolderOverlay().also {
-            mapView.overlays.add(it)
-        }
+        FolderOverlay().also { mapView.overlays.add(it) }
     }
 
-    // Polilínea para trazar la ruta
+    val routePolylinesOverlay = remember(mapView) {
+        FolderOverlay().also { mapView.overlays.add(it) }
+    }
+
     val routePolyline = remember(mapView) {
         Polyline(mapView).apply {
             outlinePaint.strokeWidth = 14f
@@ -131,7 +125,6 @@ fun MapViewOSM(
         }
     }
 
-    // Marcador de Ubicación del Usuario
     val userMarker = remember(mapView) {
         Marker(mapView).apply {
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
@@ -142,7 +135,6 @@ fun MapViewOSM(
         }
     }
 
-    // Marcador de Destino
     val destinationMarker = remember(mapView) {
         Marker(mapView).apply {
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
@@ -152,23 +144,18 @@ fun MapViewOSM(
         }
     }
 
-    // Actualizar Ubicación de Usuario
-    LaunchedEffect(latitude, longitude, isTrackingUser) {
+    // Actualizar Ubicación de Usuario y Orientación por Brújula
+    LaunchedEffect(latitude, longitude, isTrackingUser, UserLocationState.currentBearing) {
         if (latitude != null && longitude != null) {
             val userLocation = GeoPoint(latitude, longitude)
             userMarker.position = userLocation
+            userMarker.rotation = -(UserLocationState.currentBearing ?: 0f)
             userMarker.isEnabled = true
 
             if (isTrackingUser) {
-                mapView.controller.animateTo(userLocation, zoomLevel, 800L)
+                mapView.controller.setCenter(userLocation)
             }
             mapView.invalidate()
-        }
-    }
-
-    LaunchedEffect(latitude, longitude) {
-        if (latitude != null && longitude != null) {
-            precargarMapaLocal(mapView, latitude, longitude)
         }
     }
 
@@ -176,12 +163,12 @@ fun MapViewOSM(
     LaunchedEffect(recenterTrigger) {
         if (recenterTrigger > 0 && latitude != null && longitude != null) {
             val userLocation = GeoPoint(latitude, longitude)
-            mapView.controller.animateTo(userLocation, zoomLevel, 800L)
+            mapView.controller.animateTo(userLocation, zoomLevel, 500L)
             mapView.invalidate()
         }
     }
 
-    // Renderizar Zonas Seguras desde la API
+    // Renderizar Zonas Seguras
     LaunchedEffect(safeZones) {
         safeZonesOverlay.items.clear()
         safeZones.forEach { zone ->
@@ -190,7 +177,6 @@ fun MapViewOSM(
                 title = zone.name
                 snippet = "${zone.description ?: "Zona segura"}\nCapacidad: ${zone.capacity ?: "N/A"}"
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-
                 icon = ContextCompat.getDrawable(context, R.drawable.ic_safe_zone)
 
                 setOnMarkerClickListener { m, _ ->
@@ -204,7 +190,7 @@ fun MapViewOSM(
         mapView.invalidate()
     }
 
-    // Renderizar Puntos de Interés desde la API
+    // Renderizar Puntos de Interés
     LaunchedEffect(pointsOfInterest) {
         poiOverlay.items.clear()
         pointsOfInterest.forEach { poi ->
@@ -233,12 +219,28 @@ fun MapViewOSM(
         mapView.invalidate()
     }
 
-    // Renderizar Incidentes en el mapa
+    // Renderizar Incidentes y Radio de Impacto
     LaunchedEffect(incidents) {
         incidentsOverlay.items.clear()
         incidents.forEach { incident ->
+            val incPoint = GeoPoint(incident.latitude, incident.longitude)
+
+            val impactRadiusMeters = when (incident.severity) {
+                IncidentSeverity.CRITICA, IncidentSeverity.ALTA -> 100.0
+                IncidentSeverity.MEDIA -> 50.0
+                IncidentSeverity.BAJA -> 25.0
+            }
+            val circlePoints = Polygon.pointsAsCircle(incPoint, impactRadiusMeters)
+            val circleOverlay = Polygon(mapView).apply {
+                points = circlePoints
+                fillPaint.color = AndroidColor.argb(45, 220, 38, 38)
+                outlinePaint.color = AndroidColor.parseColor("#DC2626")
+                outlinePaint.strokeWidth = 3f
+            }
+            incidentsOverlay.add(circleOverlay)
+
             val marker = Marker(mapView).apply {
-                position = GeoPoint(incident.latitude, incident.longitude)
+                position = incPoint
                 title = "${incident.type.emoji} ${incident.type.displayName}"
                 snippet = buildString {
                     append("Confianza: ${incident.confidencePercentage}% (α: ${incident.alpha.toInt()}, β: ${incident.beta.toInt()})")
@@ -256,15 +258,31 @@ fun MapViewOSM(
         mapView.invalidate()
     }
 
-    // Actualizar Ruta y Destino
-    LaunchedEffect(destinationPoint, routePoints) {
+    // Actualizar Rutas
+    LaunchedEffect(destinationPoint, routePoints, routeAlternatives, selectedRouteVariant) {
+        routePolylinesOverlay.items.clear()
+        routePolyline.setPoints(emptyList())
+
+        if (routeAlternatives.isNotEmpty()) {
+            routePolyline.setVisible(false)
+            val polylines = RoutePolylineFactory.buildPolylines(
+                routes = routeAlternatives,
+                selectedRoute = selectedRouteVariant,
+                onAlternateClicked = onRouteVariantSelected
+            )
+            polylines.forEach { routePolylinesOverlay.add(it) }
+        } else if (routePoints.isNotEmpty()) {
+            routePolyline.setPoints(routePoints)
+            routePolyline.setVisible(true)
+        } else {
+            routePolyline.setVisible(false)
+        }
+
         if (destinationPoint != null) {
             destinationMarker.position = destinationPoint
             destinationMarker.setVisible(true)
-            routePolyline.setPoints(routePoints)
         } else {
             destinationMarker.setVisible(false)
-            routePolyline.setPoints(emptyList())
         }
         mapView.invalidate()
     }
@@ -358,30 +376,6 @@ private fun createIncidentMarkerBitmap(context: Context, incident: SharedInciden
     canvas.drawText(badgeText, centerX, heightPx - (2.5f * density), badgeTextPaint)
 
     return BitmapDrawable(context.resources, bitmap)
-}
-
-private fun precargarMapaLocal(mapView: MapView, currentLat: Double, currentLng: Double) {
-    kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-        try {
-            val cacheManager = CacheManager(mapView)
-
-            val deltaLat = 0.3
-            val deltaLng = 0.35
-
-            val box = BoundingBox(
-                currentLat + deltaLat,
-                currentLng + deltaLng,
-                currentLat - deltaLat,
-                currentLng - deltaLng
-            )
-
-            cacheManager.downloadAreaAsync(mapView.context, box, 13, 16, null)
-
-            android.util.Log.d("OFFLINE_MAP", "Proceso de descarga offline de 30km iniciado.")
-        } catch (e: Exception) {
-            android.util.Log.e("OFFLINE_MAP", "Error al iniciar caché offline: ${e.message}")
-        }
-    }
 }
 
 fun dibujarZonaAfectada(mapView: MapView, puntos: List<GeoPoint>) {
