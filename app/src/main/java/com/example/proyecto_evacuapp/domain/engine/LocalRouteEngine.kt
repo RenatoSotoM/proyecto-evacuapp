@@ -5,6 +5,8 @@ import android.util.Log
 import com.example.proyecto_evacuapp.data.remote.MapGraphResponseDto
 import com.example.proyecto_evacuapp.ui.components.IncidentEntity
 import com.example.proyecto_evacuapp.ui.components.IncidentSeverity
+import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
+import com.example.proyecto_evacuapp.ui.components.IncidentStatus
 import com.example.proyecto_evacuapp.ui.components.LocalRouteResult
 import com.example.proyecto_evacuapp.ui.components.RouteCoordinate
 import com.example.proyecto_evacuapp.ui.components.RouteMobilityProfile
@@ -109,10 +111,10 @@ object LocalRouteEngine {
     suspend fun calculateRouteAlternatives(
         origin: RouteCoordinate,
         destination: RouteCoordinate,
-        profile: RouteMobilityProfile,
+        profile: RouteMobilityProfile = RouteMobilityProfile.VEHICLE,
         blockedSegmentIds: Set<String> = emptySet(),
         startBearing: Float? = null
-    ): List<LocalRouteResult> = withContext(Dispatchers.IO) {
+    ): List<LocalRouteResult> = withContext(Dispatchers.Default) {
         appContext?.let { loadGraphIfNeeded(it) }
 
         val repo = requireRepository()
@@ -122,6 +124,28 @@ object LocalRouteEngine {
         if (graph.isEmpty()) {
             Log.d("EVAC_DEBUG", "LocalRouteEngine: [ABORT] Graph is empty! Road network was not loaded or OSM parsing failed.")
             return@withContext emptyList()
+        }
+
+        // 1. Inyección Dinámica de Bloqueos Pre-Dijkstra (Incidentes Verificados / confianza >= 60%)
+        val activeIncidents = IncidentSharedState.incidents
+        for (incident in activeIncidents) {
+            val isVerified = incident.status == IncidentStatus.VERIFIED || incident.confidence >= 0.60
+            if (isVerified) {
+                val reportCoord = RouteCoordinate(incident.latitude, incident.longitude)
+                val targetEdge = graph.nearestMatchingEdge(
+                    point = reportCoord,
+                    bearing = null,
+                    speedMps = null,
+                    currentEdgeId = null,
+                    maxDistanceMeters = 25.0
+                ) ?: graph.edgesWithinRadius(reportCoord, radiusMeters = 25.0).firstOrNull()
+
+                if (targetEdge != null) {
+                    targetEdge.isBlocked = true
+                    targetEdge.weight = Double.POSITIVE_INFINITY
+                    Log.d("EVAC_DEBUG", "Arista bloqueada: ${targetEdge.id}")
+                }
+            }
         }
 
         val startNode = graph.findNearestNode(origin.latitude, origin.longitude, maxRadiusMeters = 1000.0)

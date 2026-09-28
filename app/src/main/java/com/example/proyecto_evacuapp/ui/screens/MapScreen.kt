@@ -38,6 +38,16 @@ import com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine
 import com.example.proyecto_evacuapp.domain.engine.MapDownloadManager
 import com.example.proyecto_evacuapp.domain.engine.RoutingEngineManager
 import com.example.proyecto_evacuapp.ui.components.*
+import com.example.proyecto_evacuapp.ui.components.MapStyleMode
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Layers
 import com.example.proyecto_evacuapp.ui.theme.*
 import com.example.proyecto_evacuapp.ui.viewmodel.RoutingViewModel
 import com.example.proyecto_evacuapp.ui.viewmodel.SyncState
@@ -160,12 +170,18 @@ fun MapScreen() {
     var isCalculatingRoute by remember { mutableStateOf(false) }
     var isAutomaticEvacuation by remember { mutableStateOf(false) }
 
+    // ESTADO DE ESTILO DE MAPA Y ANILLOS DE COBERTURA
+    var selectedMapStyle by remember { mutableStateOf(MapStyleMode.NORMAL) }
+    var showCoverageRings by remember { mutableStateOf(true) }
+    var showStyleMenu by remember { mutableStateOf(false) }
+
     // VIEWMODEL DE DESCARGA Y PRECARGA DE CARTOGRAFÍA Y RUTEOS
     val routingViewModel: RoutingViewModel = viewModel()
     val mapDownloadState by routingViewModel.downloadState.collectAsState()
     val syncState by routingViewModel.syncState.collectAsState()
 
     LaunchedEffect(Unit) {
+        routingViewModel.startNetworkObservation(context)
         coroutineScope.launch(Dispatchers.IO) {
             val isDownloaded = MapDownloadManager.isMapDownloaded(context)
             if (isDownloaded) {
@@ -517,12 +533,12 @@ fun MapScreen() {
                     val newGeoPoint = GeoPoint(location.latitude, location.longitude)
                     UserLocationState.currentLocation = newGeoPoint
 
-                    // 1. RECÁLCULO DINÁMICO EN MOVIMIENTO (> 25 METROS)
+                    // 1. RECÁLCULO DINÁMICO EN MOVIMIENTO VIAL (> 15 METROS)
                     if (isNavigating && customDestination != null && !isCalculatingRoute) {
                         val lastCalc = lastRouteCalcPoint
                         val distMoved = if (lastCalc != null) newGeoPoint.distanceToAsDouble(lastCalc) else Double.MAX_VALUE
 
-                        if (distMoved >= 25.0) {
+                        if (distMoved >= 15.0) {
                             calculateRouteToPoint(
                                 targetPoint = customDestination!!,
                                 targetName = customDestinationName,
@@ -665,6 +681,8 @@ fun MapScreen() {
             incidents = sharedIncidents,
             safeZones = safeZones,
             pointsOfInterest = pointsOfInterest,
+            mapStyleMode = selectedMapStyle,
+            showCoverageRings = showCoverageRings,
             onPoiSelected = { poi ->
                 if (!isNavigating) {
                     isTrackingUser = false
@@ -708,6 +726,69 @@ fun MapScreen() {
                 }
             }
         )
+
+        // BOTÓN FLOTANTE UNIFICADO DE ESTILO DE MAPA Y ANILLOS
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 90.dp, end = 16.dp)
+        ) {
+            FloatingActionButton(
+                onClick = { showStyleMenu = true },
+                containerColor = SurfaceWhite,
+                contentColor = TextPrimary,
+                modifier = Modifier.size(42.dp),
+                shape = CircleShape
+            ) {
+                Icon(Icons.Default.Layers, contentDescription = "Estilo de Mapa y Anillos", modifier = Modifier.size(22.dp))
+            }
+
+            DropdownMenu(
+                expanded = showStyleMenu,
+                onDismissRequest = { showStyleMenu = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("🗺️ Estilo: Normal (Mapnik)") },
+                    onClick = { selectedMapStyle = MapStyleMode.NORMAL; showStyleMenu = false }
+                )
+                DropdownMenuItem(
+                    text = { Text("🌙 Estilo: Oscuro (Dark)") },
+                    onClick = { selectedMapStyle = MapStyleMode.DARK; showStyleMenu = false }
+                )
+                DropdownMenuItem(
+                    text = { Text("🏙️ Estilo: Minimalista") },
+                    onClick = { selectedMapStyle = MapStyleMode.MINIMALIST; showStyleMenu = false }
+                )
+                DropdownMenuItem(
+                    text = { Text("🛰️ Estilo: Híbrido (Satelital)") },
+                    onClick = { selectedMapStyle = MapStyleMode.HYBRID; showStyleMenu = false }
+                )
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text(if (showCoverageRings) "🔕 Ocultar Anillos de 30km" else "🔔 Mostrar Anillos de 30km") },
+                    onClick = { showCoverageRings = !showCoverageRings; showStyleMenu = false }
+                )
+            }
+        }
+
+        // GLOSARIO DISCRETO INFERIOR IZQUIERDA (Radios de Cobertura)
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 12.dp, bottom = 120.dp),
+            color = Color.Black.copy(alpha = 0.7f),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text("🟢 0–5km", style = MaterialTheme.typography.labelSmall, color = SafeGreen)
+                Text("🟡 5–15km", style = MaterialTheme.typography.labelSmall, color = WarningAmber)
+                Text("🔵 15–30km", style = MaterialTheme.typography.labelSmall, color = EvacuBlue)
+            }
+        }
 
         // BOTONES FLOTANTES DE CÁMARA Y DEV TOOL
         Column(
@@ -1119,6 +1200,25 @@ fun MapScreen() {
                         )
                     }
                 }
+            }
+        }
+
+        // GLOSARIO DISCRETO INFERIOR IZQUIERDA (Radios de Cobertura de Anillos)
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 12.dp, bottom = 120.dp),
+            color = Color.Black.copy(alpha = 0.7f),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text("🟢 0–5km", style = MaterialTheme.typography.labelSmall, color = SafeGreen)
+                Text("🟡 5–15km", style = MaterialTheme.typography.labelSmall, color = WarningAmber)
+                Text("🔵 15–30km", style = MaterialTheme.typography.labelSmall, color = EvacuBlue)
             }
         }
 

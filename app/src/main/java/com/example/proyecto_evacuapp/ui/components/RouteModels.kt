@@ -10,6 +10,13 @@ data class RouteCoordinate(
 fun RouteCoordinate.toGeoPoint(): GeoPoint = GeoPoint(latitude, longitude)
 fun GeoPoint.toRouteCoordinate(): RouteCoordinate = RouteCoordinate(latitude, longitude)
 
+enum class MapStyleMode(val displayName: String) {
+    NORMAL("Normal"),
+    DARK("Oscuro"),
+    MINIMALIST("Minimalista"),
+    HYBRID("Híbrido")
+}
+
 enum class RouteMobilityProfile {
     VEHICLE,
     WALKING,

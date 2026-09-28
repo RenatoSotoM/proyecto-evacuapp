@@ -32,6 +32,7 @@ import com.example.proyecto_evacuapp.data.remote.SafeZoneNearbyDto
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.tileprovider.tilesource.XYTileSource
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
@@ -39,6 +40,31 @@ import org.osmdroid.views.overlay.FolderOverlay
 import org.osmdroid.views.overlay.MapEventsOverlay
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
+
+private val CARTO_DARK = XYTileSource(
+    "CartoDBDarkMatter", 0, 19, 256, ".png",
+    arrayOf(
+        "https://a.basemaps.cartocdn.com/dark_all/",
+        "https://b.basemaps.cartocdn.com/dark_all/",
+        "https://c.basemaps.cartocdn.com/dark_all/"
+    )
+)
+
+private val CARTO_POSITRON = XYTileSource(
+    "CartoDBPositron", 0, 19, 256, ".png",
+    arrayOf(
+        "https://a.basemaps.cartocdn.com/light_all/",
+        "https://b.basemaps.cartocdn.com/light_all/",
+        "https://c.basemaps.cartocdn.com/light_all/"
+    )
+)
+
+private val ESRI_IMAGERY = XYTileSource(
+    "EsriWorldImagery", 0, 19, 256, ".jpg",
+    arrayOf(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/"
+    )
+)
 
 @SuppressLint("ClickableViewAccessibility")
 @Composable
@@ -57,6 +83,8 @@ fun MapViewOSM(
     incidents: List<SharedIncident> = emptyList(),
     safeZones: List<SafeZoneNearbyDto> = emptyList(),
     pointsOfInterest: List<PointOfInterestResponse> = emptyList(),
+    mapStyleMode: MapStyleMode = MapStyleMode.NORMAL,
+    showCoverageRings: Boolean = true,
     onPoiSelected: (PointOfInterestResponse) -> Unit = {},
     onSafeZoneSelected: (GeoPoint, String) -> Unit = { _, _ -> },
     onRouteVariantSelected: (LocalRouteResult) -> Unit = {},
@@ -142,6 +170,62 @@ fun MapViewOSM(
             icon = getScaledMarkerDrawable(context, android.R.drawable.ic_menu_compass, 20, 20)
             mapView.overlays.add(this)
         }
+    }
+
+    val coverageRingsOverlay = remember(mapView) {
+        FolderOverlay().also { mapView.overlays.add(it) }
+    }
+
+    // Cambiar Estilo de Mapa Dinámico (NORMAL, DARK, MINIMALIST, HYBRID)
+    LaunchedEffect(mapStyleMode) {
+        val tileSource = when (mapStyleMode) {
+            MapStyleMode.NORMAL -> TileSourceFactory.MAPNIK
+            MapStyleMode.DARK -> CARTO_DARK
+            MapStyleMode.MINIMALIST -> CARTO_POSITRON
+            MapStyleMode.HYBRID -> ESRI_IMAGERY
+        }
+        mapView.setTileSource(tileSource)
+        mapView.invalidate()
+    }
+
+    // Renderizar Anillos Concéntricos de Cobertura Offline (0-5km, 5-15km, 15-30km)
+    LaunchedEffect(latitude, longitude, showCoverageRings) {
+        coverageRingsOverlay.items.clear()
+        if (showCoverageRings && latitude != null && longitude != null) {
+            val center = GeoPoint(latitude, longitude)
+
+            // Anillo 1: 0 - 5 km (Verde)
+            val ring1 = Polygon(mapView).apply {
+                title = "Anillo 1 (0-5 km)"
+                points = Polygon.pointsAsCircle(center, 5000.0)
+                outlinePaint.color = AndroidColor.parseColor("#00E676")
+                outlinePaint.strokeWidth = 3f
+                fillPaint.color = AndroidColor.parseColor("#0D00E676")
+            }
+
+            // Anillo 2: 5 - 15 km (Ámbar)
+            val ring2 = Polygon(mapView).apply {
+                title = "Anillo 2 (5-15 km)"
+                points = Polygon.pointsAsCircle(center, 15000.0)
+                outlinePaint.color = AndroidColor.parseColor("#FFB300")
+                outlinePaint.strokeWidth = 3f
+                fillPaint.color = AndroidColor.parseColor("#0DFFB300")
+            }
+
+            // Anillo 3: 15 - 30 km (Azul)
+            val ring3 = Polygon(mapView).apply {
+                title = "Anillo 3 (15-30 km)"
+                points = Polygon.pointsAsCircle(center, 30000.0)
+                outlinePaint.color = AndroidColor.parseColor("#29B6F6")
+                outlinePaint.strokeWidth = 3f
+                fillPaint.color = AndroidColor.parseColor("#0D29B6F6")
+            }
+
+            coverageRingsOverlay.add(ring3)
+            coverageRingsOverlay.add(ring2)
+            coverageRingsOverlay.add(ring1)
+        }
+        mapView.invalidate()
     }
 
     // Actualizar Ubicación de Usuario y Orientación por Brújula (Modo Waze: centrado y rotación de mapa con bearing)

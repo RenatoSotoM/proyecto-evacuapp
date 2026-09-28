@@ -35,7 +35,7 @@ private fun parseAffectedSegmentIds(raw: String): Set<String> =
 
 /**
  * Repositorio espacial: Deserializa directamente el JSON comprimido del grafo de 30 km del backend NestJS.
- * Valida robustamente esquemas DTO con anotaciones @SerializedName y fallbacks.
+ * Fase 1: Filtra exclusivamente la red vial vehicular e integra reportes VERIFIED (confianza >= 60%) con snapping y costo infinito.
  */
 class RoadNetworkRepository {
     private val graph = RoadGraph()
@@ -56,7 +56,7 @@ class RoadNetworkRepository {
                         if (parsed != null && parsed.first.isNotEmpty() && parsed.second.isNotEmpty()) {
                             graph.load(parsed.first, parsed.second)
                             loadedFromJson = true
-                            Log.d("EVAC_DEBUG", "Grafo local cargado: ${parsed.first.size} nodos, ${parsed.second.size} aristas.")
+                            Log.d("EVAC_DEBUG", "Grafo local vehicular cargado: ${parsed.first.size} nodos, ${parsed.second.size} aristas.")
                         }
                     }
 
@@ -81,8 +81,6 @@ class RoadNetworkRepository {
                 Gson().fromJson(reader, MapGraphResponseDto::class.java)
             }
 
-            Log.d("EVAC_DEBUG", "parseJsonFileToGraph raw parsed DTO -> nodes count: ${response?.nodes?.size ?: 0}, edges count: ${response?.edges?.size ?: 0}")
-
             val nodesList = response?.nodes?.mapNotNull {
                 val id = it.id ?: return@mapNotNull null
                 val lat = it.lat ?: 0.0
@@ -90,12 +88,18 @@ class RoadNetworkRepository {
                 GraphNode(id = id, coordinate = RouteCoordinate(lat, lon))
             } ?: emptyList()
 
+            val nonVehicularHighways = setOf("footway", "pedestrian", "steps", "path", "bridleway", "cycleway", "corridor")
+
             val edgesList = response?.edges?.mapNotNull { edgeDto ->
+                val hType = edgeDto.highwayType?.lowercase() ?: "residential"
+                if (hType in nonVehicularHighways) {
+                    return@mapNotNull null
+                }
+
                 val id = edgeDto.id ?: "edge_${System.nanoTime()}_${Math.random()}"
                 val fromId = edgeDto.fromNodeId
                 val toId = edgeDto.toNodeId
                 if (fromId == null || toId == null) {
-                    Log.d("EVAC_DEBUG", "Edge dropped due to null endpoint: id=$id, from=$fromId, to=$toId")
                     return@mapNotNull null
                 }
                 val dist = edgeDto.distanceMeters ?: 10.0
@@ -116,12 +120,12 @@ class RoadNetworkRepository {
                     accessibilityPenalty = edgeDto.accessibilityPenalty ?: 0.05,
                     isBlocked = edgeDto.isBlocked ?: false,
                     bidirectional = bidirectional,
-                    highwayType = edgeDto.highwayType ?: "residential",
+                    highwayType = hType,
                     geometry = geometryCoords
                 )
             } ?: emptyList()
 
-            Log.d("EVAC_DEBUG", "Grafo local cargado: ${nodesList.size} nodos, ${edgesList.size} aristas.")
+            Log.d("EVAC_DEBUG", "Grafo local vehicular cargado: ${nodesList.size} nodos, ${edgesList.size} aristas.")
 
             if (nodesList.isNotEmpty() && edgesList.isNotEmpty()) {
                 return Pair(nodesList, edgesList)
@@ -141,7 +145,9 @@ class RoadNetworkRepository {
                 val type = IncidentType.fromApiValue(incident.type)
                 val severity = IncidentSeverity.fromApiValue(incident.severity)
 
-                val isVerified = status == IncidentStatus.VERIFIED
+                // Filtro de Confiabilidad: VERIFIED o confianza >= 60% mediante distribucion Beta E[X] = alpha / (alpha + beta)
+                val betaConfidence = if (incident.alpha + incident.beta > 0.0) incident.alpha / (incident.alpha + incident.beta) else 0.0
+                val isVerified = status == IncidentStatus.VERIFIED || betaConfidence >= 0.60
                 val isCriticalOrHigh = severity == IncidentSeverity.CRITICA || severity == IncidentSeverity.ALTA
                 val isBlockingType = type in RISK_INCIDENT_TYPES || type == IncidentType.RUTA_INACCESIBLE
 
@@ -153,6 +159,7 @@ class RoadNetworkRepository {
                         val changed = if (type == IncidentType.RUTA_INACCESIBLE) {
                             graph.applyEdgeAccessibility(edgeId, penalty = 1.0, incidentLocalId = incident.localId)
                         } else {
+                            // Asignación de costo infinito (isBlocked = true, riskWeight = 1.0) para desvío vehicular
                             graph.applyEdgeRisk(edgeId, riskWeight = 1.0, blocked = true, incidentLocalId = incident.localId)
                         }
                         if (changed) anyChanged = true

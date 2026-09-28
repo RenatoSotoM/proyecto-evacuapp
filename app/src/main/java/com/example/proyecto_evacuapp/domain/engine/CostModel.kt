@@ -76,7 +76,7 @@ fun edgeCost(
     avoidInaccessible: Boolean = false,
     extraPenalty: Double = 0.0
 ): Double {
-    if (edge.isBlocked) return HARD_BLOCK_COST
+    if (edge.isBlocked || edge.weight == Double.POSITIVE_INFINITY) return HARD_BLOCK_COST
     if (avoidVerifiedRisk && edge.riskWeight >= RISK_VERIFIED_THRESHOLD) return HARD_BLOCK_COST
     if (avoidInaccessible && edge.accessibilityPenalty >= 0.9) return HARD_BLOCK_COST
 

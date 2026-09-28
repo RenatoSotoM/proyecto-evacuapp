@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.proyecto_evacuapp.domain.engine.DownloadState
 import com.example.proyecto_evacuapp.domain.engine.MapDownloadManager
 import com.example.proyecto_evacuapp.domain.engine.RoutingEngineManager
+import com.example.proyecto_evacuapp.utils.NetworkConnectivityObserver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,7 +29,7 @@ sealed class SyncState {
 
 /**
  * ViewModel que conecta la inicialización asíncrona de cartografía dinámica basada en GPS,
- * el estado explícito de sincronización (SyncState) y la precarga del motor de ruteo offline con la UI.
+ * el sensor inteligente de conectividad (NetworkConnectivityObserver) y el ruteo vehicular offline con la UI.
  */
 class RoutingViewModel : ViewModel() {
 
@@ -42,6 +43,18 @@ class RoutingViewModel : ViewModel() {
 
     private val _calculatedRoute = MutableStateFlow<List<GeoPoint>>(emptyList())
     val calculatedRoute: StateFlow<List<GeoPoint>> = _calculatedRoute.asStateFlow()
+
+    private var networkObserver: NetworkConnectivityObserver? = null
+
+    fun startNetworkObservation(context: Context) {
+        if (networkObserver == null) {
+            networkObserver = NetworkConnectivityObserver(context.applicationContext, viewModelScope).apply {
+                startObserving { newState ->
+                    _syncState.value = newState
+                }
+            }
+        }
+    }
 
     fun updateSyncState(newState: SyncState) {
         _syncState.value = newState
@@ -57,6 +70,7 @@ class RoutingViewModel : ViewModel() {
         destLat: Double? = null,
         destLng: Double? = null
     ) {
+        startNetworkObservation(context)
         viewModelScope.launch(Dispatchers.IO) {
             withContext(NonCancellable) {
                 _syncState.value = SyncState.Syncing
@@ -127,5 +141,11 @@ class RoutingViewModel : ViewModel() {
                 _calculatedRoute.value = points
             }
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        networkObserver?.stopObserving()
+        networkObserver = null
     }
 }

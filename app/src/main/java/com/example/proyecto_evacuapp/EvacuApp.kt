@@ -19,6 +19,24 @@ class EvacuApp : Application() {
         val database = EvacuAppDatabase.getInstance(this)
         IncidentSharedState.initialize(database)
 
+        // Precarga única del grafo vial vehicular en RAM al iniciar la aplicación (evita lectura de disco en cada cálculo)
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.initialize(applicationContext)
+                val file = java.io.File(applicationContext.filesDir, "local_graph_30km.json")
+                if (file.exists() && file.length() > 0L) {
+                    com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.calculateRouteAlternatives(
+                        origin = com.example.proyecto_evacuapp.ui.components.RouteCoordinate(-33.4489, -70.6693),
+                        destination = com.example.proyecto_evacuapp.ui.components.RouteCoordinate(-33.4500, -70.6600),
+                        profile = com.example.proyecto_evacuapp.ui.components.RouteMobilityProfile.VEHICLE
+                    )
+                    Log.d("EVAC_DEBUG", "Grafo vial vehicular precargado en RAM exitosamente en Application.onCreate()")
+                }
+            } catch (e: Exception) {
+                Log.w("EvacuApp", "No se pudo precargar el grafo vial en inicio: ${e.message}")
+            }
+        }
+
         val prefs = getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
         val token = prefs.getString("jwt_token", null)
 

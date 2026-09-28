@@ -20,6 +20,7 @@ data class GraphEdge(
     val fromId: String? = null,
     val toId: String? = null,
     val distanceMeters: Double = 0.0,
+    var weight: Double = distanceMeters,
     var riskWeight: Double = 0.0,
     var accessibilityPenalty: Double = 0.0,
     var isBlocked: Boolean = false,
@@ -285,6 +286,10 @@ class RoadGraph {
             val outgoingEdgeIds = adjacency[currentId] ?: continue
             for (edgeId in outgoingEdgeIds) {
                 val edge = edges[edgeId] ?: continue
+
+                if (edge.isBlocked || edge.weight == Double.POSITIVE_INFINITY) {
+                    continue
+                }
 
                 // Respetar sentido único en vías unidireccionales
                 if (!edge.bidirectional && currentId != edge.fromId) {
