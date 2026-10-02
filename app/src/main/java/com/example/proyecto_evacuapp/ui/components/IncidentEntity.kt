@@ -19,5 +19,6 @@ data class IncidentEntity(
     val beta: Double,
     val status: String,
     val affectedSegmentIds: String,
-    val isOwnReport: Boolean
+    val isOwnReport: Boolean,
+    val affectedEdgeId: String? = null
 )

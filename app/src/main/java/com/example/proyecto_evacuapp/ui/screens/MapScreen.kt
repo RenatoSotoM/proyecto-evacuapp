@@ -705,7 +705,8 @@ fun MapScreen() {
             onMapTouched = { isTrackingUser = false },
             onMapLongClick = { point: GeoPoint ->
                 if (isDevBlockModeEnabled) {
-                    // // DEV ONLY: Insertar un bloqueo de calle en tiempo real
+                    // DEV ONLY: Insertar un bloqueo de calle en tiempo real
+                    val edgeId = LocalRouteEngine.snapToNearestEdge(point.latitude, point.longitude)
                     val devBlock = SharedIncident(
                         localId = java.util.UUID.randomUUID().toString(),
                         type = IncidentType.BLOQUEO_VIAL,
@@ -716,7 +717,8 @@ fun MapScreen() {
                         alpha = 10.0,
                         beta = 1.0,
                         status = IncidentStatus.VERIFIED,
-                        isOwnReport = true
+                        isOwnReport = true,
+                        affectedEdgeId = edgeId
                     )
                     IncidentSharedState.addLocalIncident(devBlock)
                     Toast.makeText(context, "🚧 Bloqueo de vía creado en (${"%.4f".format(point.latitude)}, ${"%.4f".format(point.longitude)})", Toast.LENGTH_SHORT).show()
@@ -794,7 +796,7 @@ fun MapScreen() {
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 16.dp, bottom = 240.dp),
+                .padding(end = 16.dp, bottom = 300.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             // // DEV ONLY: BOTÓN DE HERRAMIENTAS DE PRUEBA DE BLOQUEO EN VIVO
@@ -851,7 +853,7 @@ fun MapScreen() {
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(bottom = 90.dp, end = 16.dp),
+                .padding(bottom = 240.dp, end = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             FloatingActionButton(

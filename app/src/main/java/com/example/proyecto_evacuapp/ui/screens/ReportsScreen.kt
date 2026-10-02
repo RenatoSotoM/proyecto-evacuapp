@@ -214,6 +214,7 @@ fun ReportsScreen() {
                     onSave = {
                         val localId = UUID.randomUUID().toString()
                         val descText = reportDescription.trim().ifBlank { "Sin descripción adicional." }
+                        val edgeId = com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.snapToNearestEdge(currentLat, currentLon)
 
                         val newSharedIncident = SharedIncident(
                             localId = localId,
@@ -226,7 +227,8 @@ fun ReportsScreen() {
                             alpha = 1.0,
                             beta = 1.0,
                             status = IncidentStatus.LOCAL_PENDING,
-                            affectedSegmentIds = affectedSegmentsFor(activeType.code)
+                            affectedSegmentIds = affectedSegmentsFor(activeType.code),
+                            affectedEdgeId = edgeId
                         )
 
                         IncidentSharedState.addLocalIncident(newSharedIncident)

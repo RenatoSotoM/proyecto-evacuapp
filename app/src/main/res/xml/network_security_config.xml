@@ -5,6 +5,8 @@
         <domain includeSubdomains="true">10.0.2.2</domain>
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">192.168.44.37</domain>
+        <domain includeSubdomains="true">10.115.150.204</domain>
+
     </domain-config>
     <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

@@ -4,195 +4,181 @@ import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
 import com.example.proyecto_evacuapp.data.remote.MapGraphResponseDto
+import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
 import com.example.proyecto_evacuapp.ui.components.IncidentEntity
-import com.example.proyecto_evacuapp.ui.components.IncidentSeverity
-import com.example.proyecto_evacuapp.ui.components.IncidentStatus
-import com.example.proyecto_evacuapp.ui.components.IncidentType
+import com.example.proyecto_evacuapp.ui.components.RoadEdgeEntity
+import com.example.proyecto_evacuapp.ui.components.RoadGraphDao
+import com.example.proyecto_evacuapp.ui.components.RoadNodeEntity
 import com.example.proyecto_evacuapp.ui.components.RouteCoordinate
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileReader
 
 private const val TAG = "RoadNetworkRepository"
-private const val MAX_MATCH_DISTANCE_METERS = 60.0
-
-private val RISK_INCIDENT_TYPES = setOf(
-    IncidentType.BLOQUEO_VIAL,
-    IncidentType.INCENDIO,
-    IncidentType.INUNDACION,
-    IncidentType.DERRUMBE,
-    IncidentType.ACCIDENTE
-)
-
-private fun parseIncidentStatus(value: String): IncidentStatus? =
-    IncidentStatus.entries.find { it.name.equals(value, ignoreCase = true) }
-
-private fun parseAffectedSegmentIds(raw: String): Set<String> =
-    raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
 /**
- * Repositorio espacial: Deserializa directamente el JSON comprimido del grafo de 30 km del backend NestJS.
- * Fase 1: Filtra exclusivamente la red vial vehicular e integra reportes VERIFIED (confianza >= 60%) con snapping y costo infinito.
+ * Repositorio espacial bajo demanda con Bounding Box (BBox) ajustable sobre Room DB.
  */
 class RoadNetworkRepository {
-    private val graph = RoadGraph()
-    private val mutex = Mutex()
-    private var lastLoadedCenter: RouteCoordinate? = null
 
     suspend fun ensureLoadedForRoute(context: Context?, origin: RouteCoordinate, destination: RouteCoordinate) {
+        if (context == null) return
         withContext(Dispatchers.IO) {
-            val center = lastLoadedCenter
-            val distFromCenterMeters = if (center != null) haversineMeters(origin, center) else Double.MAX_VALUE
+            try {
+                val db = EvacuAppDatabase.getInstance(context)
+                val dao = db.roadGraphDao()
+                ensureJsonImportedIntoRoom(context, dao)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in ensureLoadedForRoute: ${e.message}", e)
+            }
+        }
+    }
 
-            if (center == null || distFromCenterMeters >= 25_000.0 || graph.isEmpty()) {
-                mutex.withLock {
-                    var loadedFromJson = false
-                    if (context != null) {
-                        val jsonFile = MapDownloadManager.getLocalMapFile(context)
-                        val parsed = parseJsonFileToGraph(jsonFile)
-                        if (parsed != null && parsed.first.isNotEmpty() && parsed.second.isNotEmpty()) {
-                            graph.load(parsed.first, parsed.second)
-                            loadedFromJson = true
-                            Log.d("EVAC_DEBUG", "Grafo local vehicular cargado: ${parsed.first.size} nodos, ${parsed.second.size} aristas.")
-                        }
+    private suspend fun ensureJsonImportedIntoRoom(context: Context, dao: RoadGraphDao) {
+        if (dao.countNodes() == 0) {
+            val file = File(context.filesDir, "local_graph_30km.json")
+            if (file.exists() && file.length() > 0L) {
+                try {
+                    val response = FileReader(file).use { reader ->
+                        Gson().fromJson(reader, MapGraphResponseDto::class.java)
                     }
+                    val nodeEntities = response?.nodes?.mapNotNull {
+                        val id = it.id ?: return@mapNotNull null
+                        val lat = it.lat ?: 0.0
+                        val lon = it.lon ?: 0.0
+                        RoadNodeEntity(id = id, latitude = lat, longitude = lon)
+                    } ?: emptyList()
 
-                    if (!loadedFromJson) {
-                        Log.e(TAG, "FALLO CRÍTICO: Archivo JSON local de grafo no encontrado o vacío. Grafo vacío.")
-                        graph.load(emptyList(), emptyList())
+                    val nonVehicularHighways = setOf("footway", "pedestrian", "steps", "path", "bridleway", "cycleway", "corridor")
+                    val edgeEntities = response?.edges?.mapNotNull { edgeDto ->
+                        val hType = edgeDto.highwayType?.lowercase() ?: "residential"
+                        if (hType in nonVehicularHighways) return@mapNotNull null
+                        val id = edgeDto.id ?: return@mapNotNull null
+                        val fromId = edgeDto.fromNodeId ?: return@mapNotNull null
+                        val toId = edgeDto.toNodeId ?: return@mapNotNull null
+                        val dist = edgeDto.distanceMeters ?: 10.0
+                        val isOneway = edgeDto.oneway ?: false
+                        val bidirectional = (edgeDto.bidirectional ?: true) && !isOneway
+
+                        RoadEdgeEntity(
+                            id = id,
+                            fromNodeId = fromId,
+                            toNodeId = toId,
+                            distanceMeters = dist,
+                            riskWeight = edgeDto.riskWeight ?: 0.0,
+                            accessibilityPenalty = edgeDto.accessibilityPenalty ?: 0.05,
+                            isBlocked = edgeDto.isBlocked ?: false,
+                            isBidirectional = bidirectional
+                        )
+                    } ?: emptyList()
+
+                    if (nodeEntities.isNotEmpty()) {
+                        dao.insertNodes(nodeEntities)
                     }
-
-                    lastLoadedCenter = origin
+                    if (edgeEntities.isNotEmpty()) {
+                        dao.insertEdges(edgeEntities)
+                    }
+                    Log.d(TAG, "Importados ${nodeEntities.size} nodos y ${edgeEntities.size} aristas desde JSON a Room DB.")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error parsing local graph JSON into Room: ${e.message}", e)
                 }
             }
         }
     }
 
-    private fun parseJsonFileToGraph(file: File): Pair<List<GraphNode>, List<GraphEdge>>? {
-        if (!file.exists() || file.length() == 0L) {
-            Log.d("EVAC_DEBUG", "parseJsonFileToGraph: File does not exist or size is 0.")
-            return null
-        }
+    suspend fun loadTransientGraphForRoute(
+        context: Context?,
+        origin: RouteCoordinate,
+        destination: RouteCoordinate,
+        margin: Double = 0.03
+    ): RoadGraph? = withContext(Dispatchers.IO) {
+        if (context == null) return@withContext null
         try {
-            val response = FileReader(file).use { reader ->
-                Gson().fromJson(reader, MapGraphResponseDto::class.java)
+            val db = EvacuAppDatabase.getInstance(context)
+            val dao = db.roadGraphDao()
+            ensureJsonImportedIntoRoom(context, dao)
+
+            val minLat = minOf(origin.latitude, destination.latitude) - margin
+            val maxLat = maxOf(origin.latitude, destination.latitude) + margin
+            val minLon = minOf(origin.longitude, destination.longitude) - margin
+            val maxLon = maxOf(origin.longitude, destination.longitude) + margin
+
+            val nodeEntities = dao.getNodesInBBox(minLat, maxLat, minLon, maxLon)
+            val edgeEntities = dao.getEdgesInBBox(minLat, maxLat, minLon, maxLon)
+
+            if (nodeEntities.isEmpty() || edgeEntities.isEmpty()) {
+                Log.w(TAG, "No se encontraron nodos/aristas en el BBox (margin=$margin) para origin=$origin, dest=$destination")
+                return@withContext null
             }
 
-            val nodesList = response?.nodes?.mapNotNull {
-                val id = it.id ?: return@mapNotNull null
-                val lat = it.lat ?: 0.0
-                val lon = it.lon ?: 0.0
-                GraphNode(id = id, coordinate = RouteCoordinate(lat, lon))
-            } ?: emptyList()
-
-            val nonVehicularHighways = setOf("footway", "pedestrian", "steps", "path", "bridleway", "cycleway", "corridor")
-
-            val edgesList = response?.edges?.mapNotNull { edgeDto ->
-                val hType = edgeDto.highwayType?.lowercase() ?: "residential"
-                if (hType in nonVehicularHighways) {
-                    return@mapNotNull null
-                }
-
-                val id = edgeDto.id ?: "edge_${System.nanoTime()}_${Math.random()}"
-                val fromId = edgeDto.fromNodeId
-                val toId = edgeDto.toNodeId
-                if (fromId == null || toId == null) {
-                    return@mapNotNull null
-                }
-                val dist = edgeDto.distanceMeters ?: 10.0
-                val isOneway = edgeDto.oneway ?: false
-                val bidirectional = (edgeDto.bidirectional ?: true) && !isOneway
-                val geometryCoords = edgeDto.geometry?.mapNotNull { g ->
-                    val glat = g.lat
-                    val glon = g.lon
-                    if (glat != null && glon != null) RouteCoordinate(glat, glon) else null
-                } ?: emptyList()
-
+            val graph = RoadGraph()
+            val nodes = nodeEntities.map { GraphNode(id = it.id, coordinate = RouteCoordinate(it.latitude, it.longitude)) }
+            val edges = edgeEntities.map {
                 GraphEdge(
-                    id = id,
-                    fromId = fromId,
-                    toId = toId,
-                    distanceMeters = dist,
-                    riskWeight = edgeDto.riskWeight ?: 0.0,
-                    accessibilityPenalty = edgeDto.accessibilityPenalty ?: 0.05,
-                    isBlocked = edgeDto.isBlocked ?: false,
-                    bidirectional = bidirectional,
-                    highwayType = hType,
-                    geometry = geometryCoords
+                    id = it.id,
+                    fromId = it.fromNodeId,
+                    toId = it.toNodeId,
+                    distanceMeters = it.distanceMeters,
+                    riskWeight = it.riskWeight,
+                    accessibilityPenalty = it.accessibilityPenalty,
+                    isBlocked = it.isBlocked,
+                    bidirectional = it.isBidirectional,
+                    blockingIncidentLocalId = it.blockingIncidentLocalId
                 )
-            } ?: emptyList()
-
-            Log.d("EVAC_DEBUG", "Grafo local vehicular cargado: ${nodesList.size} nodos, ${edgesList.size} aristas.")
-
-            if (nodesList.isNotEmpty() && edgesList.isNotEmpty()) {
-                return Pair(nodesList, edgesList)
             }
+            graph.load(nodes, edges)
+            Log.d("EVAC_DEBUG", "Subgrafo transitorio BBox cargado: ${nodes.size} nodos, ${edges.size} aristas.")
+            return@withContext graph
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing local graph JSON: ${e.message}", e)
+            Log.e(TAG, "Error loading transient graph for route: ${e.message}", e)
+            null
         }
-        return null
     }
 
-    suspend fun applyIncidents(incidents: List<IncidentEntity>): Boolean = withContext(Dispatchers.IO) {
-        var anyChanged = false
-        mutex.withLock {
-            val activeIncidentIds = HashSet<String>()
-            for (incident in incidents) {
-                val status = parseIncidentStatus(incident.status)
-                val type = IncidentType.fromApiValue(incident.type)
-                val severity = IncidentSeverity.fromApiValue(incident.severity)
+    suspend fun snapToNearestEdge(context: Context?, latitude: Double, longitude: Double, maxDistanceMeters: Double = 25.0): String? = withContext(Dispatchers.IO) {
+        if (context == null) return@withContext null
+        try {
+            val db = EvacuAppDatabase.getInstance(context)
+            val dao = db.roadGraphDao()
+            ensureJsonImportedIntoRoom(context, dao)
 
-                // Filtro de Confiabilidad: VERIFIED o confianza >= 60% mediante distribucion Beta E[X] = alpha / (alpha + beta)
-                val betaConfidence = if (incident.alpha + incident.beta > 0.0) incident.alpha / (incident.alpha + incident.beta) else 0.0
-                val isVerified = status == IncidentStatus.VERIFIED || betaConfidence >= 0.60
-                val isCriticalOrHigh = severity == IncidentSeverity.CRITICA || severity == IncidentSeverity.ALTA
-                val isBlockingType = type in RISK_INCIDENT_TYPES || type == IncidentType.RUTA_INACCESIBLE
+            val minLat = latitude - 0.02
+            val maxLat = latitude + 0.02
+            val minLon = longitude - 0.02
+            val maxLon = longitude + 0.02
 
-                if (isBlockingType && (isVerified || isCriticalOrHigh)) {
-                    activeIncidentIds += incident.localId
-                    val targetEdges = resolveAffectedEdges(incident)
-                    for (edge in targetEdges) {
-                        val edgeId = edge.id ?: continue
-                        val changed = if (type == IncidentType.RUTA_INACCESIBLE) {
-                            graph.applyEdgeAccessibility(edgeId, penalty = 1.0, incidentLocalId = incident.localId)
-                        } else {
-                            // Asignación de costo infinito (isBlocked = true, riskWeight = 1.0) para desvío vehicular
-                            graph.applyEdgeRisk(edgeId, riskWeight = 1.0, blocked = true, incidentLocalId = incident.localId)
-                        }
-                        if (changed) anyChanged = true
-                    }
-                }
+            val nodeEntities = dao.getNodesInBBox(minLat, maxLat, minLon, maxLon)
+            val edgeEntities = dao.getEdgesInBBox(minLat, maxLat, minLon, maxLon)
+
+            if (nodeEntities.isEmpty() || edgeEntities.isEmpty()) return@withContext null
+
+            val graph = RoadGraph()
+            val nodes = nodeEntities.map { GraphNode(id = it.id, coordinate = RouteCoordinate(it.latitude, it.longitude)) }
+            val edges = edgeEntities.map {
+                GraphEdge(
+                    id = it.id,
+                    fromId = it.fromNodeId,
+                    toId = it.toNodeId,
+                    distanceMeters = it.distanceMeters,
+                    riskWeight = it.riskWeight,
+                    accessibilityPenalty = it.accessibilityPenalty,
+                    isBlocked = it.isBlocked,
+                    bidirectional = it.isBidirectional,
+                    blockingIncidentLocalId = it.blockingIncidentLocalId
+                )
             }
+            graph.load(nodes, edges)
+
+            val coord = RouteCoordinate(latitude, longitude)
+            val matchedEdge = graph.nearestMatchingEdge(coord, maxDistanceMeters = maxDistanceMeters)
+                ?: graph.edgesWithinRadius(coord, radiusMeters = maxDistanceMeters).firstOrNull()
+            return@withContext matchedEdge?.id
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in snapToNearestEdge: ${e.message}", e)
+            null
         }
-        anyChanged
     }
 
-    fun findMatchingEdge(
-        point: RouteCoordinate,
-        bearing: Float? = null,
-        speedMps: Double? = null,
-        currentEdgeId: String? = null
-    ): GraphEdge? {
-        return graph.nearestMatchingEdge(
-            point = point,
-            bearing = bearing,
-            speedMps = speedMps,
-            currentEdgeId = currentEdgeId,
-            maxDistanceMeters = MAX_MATCH_DISTANCE_METERS
-        )
-    }
-
-    private fun resolveAffectedEdges(incident: IncidentEntity): List<GraphEdge> {
-        val explicitIds = parseAffectedSegmentIds(incident.affectedSegmentIds)
-        if (explicitIds.isNotEmpty()) {
-            return explicitIds.mapNotNull { graph.edgeById(it) }
-        }
-        val point = RouteCoordinate(incident.latitude, incident.longitude)
-        return graph.edgesWithinRadius(point, radiusMeters = 20.0)
-    }
-
-    fun graphSnapshot(): RoadGraph = graph
+    suspend fun applyIncidents(incidents: List<IncidentEntity>): Boolean = true
 }

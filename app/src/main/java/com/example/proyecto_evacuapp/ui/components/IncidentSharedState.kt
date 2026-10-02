@@ -37,7 +37,15 @@ object IncidentSharedState {
             incidentDao.observeAll().collectLatest { entities ->
                 if (!isClearedForTesting) {
                     val restoredIncidents = entities.map { entity ->
-                        entity.toSharedIncident()
+                        val shared = entity.toSharedIncident()
+                        if (shared.affectedEdgeId == null) {
+                            val edgeId = com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.snapToNearestEdge(shared.latitude, shared.longitude)
+                            if (edgeId != null) {
+                                val updated = shared.copy(affectedEdgeId = edgeId)
+                                persist(updated)
+                                updated
+                            } else shared
+                        } else shared
                     }
 
                     withContext(Dispatchers.Main.immediate) {
@@ -83,6 +91,7 @@ object IncidentSharedState {
                     }
                     if (existingIndex >= 0 && existingIndex < incidentList.size) {
                         val existing = incidentList[existingIndex]
+                        val edgeId = existing.affectedEdgeId ?: com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.snapToNearestEdge(dto.latitude, dto.longitude)
                         val updated = existing.copy(
                             remoteId = dto.id,
                             type = type,
@@ -93,11 +102,13 @@ object IncidentSharedState {
                             alpha = dto.alpha ?: existing.alpha,
                             beta = dto.beta ?: existing.beta,
                             status = status,
+                            affectedEdgeId = edgeId,
                             updatedAtMillis = System.currentTimeMillis()
                         )
                         replaceInMemory(updated)
                         persist(updated)
                     } else {
+                        val edgeId = com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.snapToNearestEdge(dto.latitude, dto.longitude)
                         val newIncident = SharedIncident(
                             remoteId = dto.id,
                             type = type,
@@ -108,7 +119,8 @@ object IncidentSharedState {
                             alpha = dto.alpha ?: 1.0,
                             beta = dto.beta ?: 1.0,
                             status = status,
-                            isOwnReport = false
+                            isOwnReport = false,
+                            affectedEdgeId = edgeId
                         )
                         replaceInMemory(newIncident)
                         persist(newIncident)
@@ -155,8 +167,10 @@ object IncidentSharedState {
 
     fun addLocalIncident(incident: SharedIncident) {
         isClearedForTesting = false // Se restablece el flag al crear manualmente un nuevo reporte para que este persista
+        val edgeId = incident.affectedEdgeId ?: com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.snapToNearestEdge(incident.latitude, incident.longitude)
         val localIncident = incident.copy(
             status = IncidentStatus.LOCAL_PENDING,
+            affectedEdgeId = edgeId,
             updatedAtMillis = System.currentTimeMillis()
         )
 
@@ -274,7 +288,8 @@ private fun SharedIncident.toEntity(): IncidentEntity {
         beta = beta,
         status = status.name,
         affectedSegmentIds = affectedSegmentIds.joinToString(","),
-        isOwnReport = isOwnReport
+        isOwnReport = isOwnReport,
+        affectedEdgeId = affectedEdgeId
     )
 }
 
@@ -296,6 +311,7 @@ private fun IncidentEntity.toSharedIncident(): SharedIncident {
             .split(",")
             .filter { it.isNotBlank() }
             .toSet(),
-        isOwnReport = isOwnReport
+        isOwnReport = isOwnReport,
+        affectedEdgeId = affectedEdgeId
     )
 }

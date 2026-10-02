@@ -12,7 +12,7 @@ import kotlinx.coroutines.launch
 
 @Database(
     entities = [IncidentEntity::class, RoadNodeEntity::class, RoadEdgeEntity::class, SafeZoneEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class EvacuAppDatabase : RoomDatabase() {
@@ -61,6 +61,15 @@ abstract class EvacuAppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Migración v3 -> v4: Agrega la columna affectedEdgeId a la tabla de incidentes.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `incidents` ADD COLUMN `affectedEdgeId` TEXT")
+            }
+        }
+
         @Volatile
         private var instance: EvacuAppDatabase? = null
 
@@ -71,7 +80,8 @@ abstract class EvacuAppDatabase : RoomDatabase() {
                     EvacuAppDatabase::class.java,
                     "evacuapp_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .fallbackToDestructiveMigration(true)
                     .addCallback(object : Callback() {
                         override fun onCreate(db: SupportSQLiteDatabase) {
                             super.onCreate(db)

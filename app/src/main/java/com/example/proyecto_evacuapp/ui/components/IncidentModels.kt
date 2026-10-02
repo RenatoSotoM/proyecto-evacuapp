@@ -78,7 +78,8 @@ data class SharedIncident(
     val beta: Double = 1.0,
     val status: IncidentStatus = IncidentStatus.LOCAL_PENDING,
     val affectedSegmentIds: Set<String> = emptySet(),
-    val isOwnReport: Boolean = true
+    val isOwnReport: Boolean = true,
+    val affectedEdgeId: String? = null
 ) {
     val confidence: Double
         get() {

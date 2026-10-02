@@ -50,11 +50,39 @@ data class RoadEdgeEntity(
 @Dao
 interface RoadGraphDao {
 
+    @Query(
+        """
+        SELECT * FROM road_nodes 
+        WHERE latitude BETWEEN :minLat AND :maxLat 
+          AND longitude BETWEEN :minLon AND :maxLon
+        """
+    )
+    suspend fun getNodesInBBox(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double): List<RoadNodeEntity>
+
+    @Query(
+        """
+        SELECT * FROM road_edges 
+        WHERE fromNodeId IN (
+            SELECT id FROM road_nodes 
+            WHERE latitude BETWEEN :minLat AND :maxLat 
+              AND longitude BETWEEN :minLon AND :maxLon
+        ) OR toNodeId IN (
+            SELECT id FROM road_nodes 
+            WHERE latitude BETWEEN :minLat AND :maxLat 
+              AND longitude BETWEEN :minLon AND :maxLon
+        )
+        """
+    )
+    suspend fun getEdgesInBBox(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double): List<RoadEdgeEntity>
+
     @Query("SELECT * FROM road_nodes")
     suspend fun getAllNodes(): List<RoadNodeEntity>
 
     @Query("SELECT * FROM road_edges")
     suspend fun getAllEdges(): List<RoadEdgeEntity>
+
+    @Query("SELECT COUNT(*) FROM road_nodes")
+    suspend fun countNodes(): Int
 
     @Query("SELECT COUNT(*) FROM road_edges")
     suspend fun countEdges(): Int
