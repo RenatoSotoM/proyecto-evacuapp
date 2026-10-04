@@ -118,6 +118,43 @@ private fun findBlockingIncidentOnRoute(
     return null
 }
 
+private fun distanceToPolylineMeters(point: GeoPoint, polyline: List<GeoPoint>): Double {
+    if (polyline.isEmpty()) return Double.MAX_VALUE
+    if (polyline.size == 1) return point.distanceToAsDouble(polyline.first())
+
+    var minDistance = Double.MAX_VALUE
+    for (i in 0 until polyline.size - 1) {
+        val p1 = polyline[i]
+        val p2 = polyline[i + 1]
+        val dist = distancePointToSegmentMeters(point, p1, p2)
+        if (dist < minDistance) {
+            minDistance = dist
+        }
+    }
+    return minDistance
+}
+
+private fun distancePointToSegmentMeters(point: GeoPoint, segA: GeoPoint, segB: GeoPoint): Double {
+    val x = point.longitude
+    val y = point.latitude
+    val x1 = segA.longitude
+    val y1 = segA.latitude
+    val x2 = segB.longitude
+    val y2 = segB.latitude
+
+    val dx = x2 - x1
+    val dy = y2 - y1
+
+    if (dx == 0.0 && dy == 0.0) {
+        return point.distanceToAsDouble(segA)
+    }
+
+    val t = (((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy)).coerceIn(0.0, 1.0)
+    val projLat = y1 + t * dy
+    val projLon = x1 + t * dx
+    return point.distanceToAsDouble(GeoPoint(projLat, projLon))
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("MissingPermission")
 @Composable
@@ -556,12 +593,12 @@ fun MapScreen() {
                     val newGeoPoint = GeoPoint(location.latitude, location.longitude)
                     UserLocationState.currentLocation = newGeoPoint
 
-                    // 1. RECÁLCULO DINÁMICO EN MOVIMIENTO VIAL (> 15 METROS)
-                    if (isNavigating && customDestination != null && !isCalculatingRoute) {
-                        val lastCalc = lastRouteCalcPoint
-                        val distMoved = if (lastCalc != null) newGeoPoint.distanceToAsDouble(lastCalc) else Double.MAX_VALUE
+                    // 1. DETECCIÓN DE DESVÍO REAL DE RUTA (> 40 METROS PERPENDICULAR A LA POLILÍNEA)
+                    if (isNavigating && customDestination != null && customRoutePoints.isNotEmpty() && !isCalculatingRoute) {
+                        val deviationMeters = distanceToPolylineMeters(newGeoPoint, customRoutePoints)
 
-                        if (distMoved >= 15.0) {
+                        if (deviationMeters >= 40.0) {
+                            Log.w("MAP_ROUTE", "Desvío real de ruta detectado: $deviationMeters m fuera de la polilinea. Recalculando...")
                             Toast.makeText(context, "⚠️ Te has desviado de la ruta segura, recalculando vía alterna...", Toast.LENGTH_SHORT).show()
                             calculateRouteToPoint(
                                 targetPoint = customDestination!!,
