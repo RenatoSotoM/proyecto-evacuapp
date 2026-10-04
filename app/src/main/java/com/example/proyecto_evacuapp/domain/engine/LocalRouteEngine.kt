@@ -313,7 +313,18 @@ object LocalRouteEngine {
         val distinctResults = results.distinctBy { it.variant }
 
         val calcMs = System.currentTimeMillis() - calcStartMs
-        Log.d("EVAC_METRIC", "[ROUTING] Mode: ${profile.name} | Nodes: $nodesCount | Edges: $edgesCount | BBoxLoadTime: ${loadMs}ms | RouteCalcTime: ${calcMs}ms")
+        val runtime = Runtime.getRuntime()
+        val heapUsedMB = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
+        val payloadSizeKB = String.format(java.util.Locale.US, "%.1f", (nodesCount * 64 + edgesCount * 128) / 1024.0)
+
+        for (res in distinctResults) {
+            val distMeters = res.distanceMeters.toInt()
+            val turns = res.points.size
+            Log.d(
+                "EVAC_METRIC",
+                "[ROUTING] Mode: ${profile.name} | RouteName: ${res.label} | NetworkState: OFFLINE_ROOM_DB | Nodes: $nodesCount | Edges: $edgesCount | BBoxLoadTime: ${loadMs}ms | RouteCalcTime: ${calcMs}ms | HeapMemoryUsedMB: ${heapUsedMB}MB | PayloadSizeKB: ${payloadSizeKB}KB | RouteDistanceMeters: ${distMeters}m | TurnCount: $turns"
+            )
+        }
 
         if (distinctResults.isEmpty()) {
             return@withContext listOf(
