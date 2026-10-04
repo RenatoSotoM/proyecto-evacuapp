@@ -76,7 +76,8 @@ object LocalRouteEngine {
         val repo = requireRepository()
         repo.ensureLoadedForRoute(appContext, origin, destination)
 
-        // 1. Intento inicial con BBox estándar (margin = 0.03 ~ 3km)
+        // 1. Intento inicial con BBox estándar (margin = 0.03 ~ 3km) con medición de tiempo
+        val loadStartMs = System.currentTimeMillis()
         var graph = repo.loadTransientGraphForRoute(appContext, origin, destination, margin = 0.03)
         var usedExpandedBBox = false
 
@@ -86,14 +87,22 @@ object LocalRouteEngine {
             usedExpandedBBox = true
         }
 
+        val loadMs = System.currentTimeMillis() - loadStartMs
+
         if (graph == null || graph.isEmpty()) {
-            Log.d("EVAC_DEBUG", "LocalRouteEngine: [ABORT] Graph still empty after expanded BBox.")
+            Log.d("EVAC_DEBUG", "LocalRouteEngine: BBox transitorio sin nodos ni aristas.")
             return@withContext listOf(
                 emptyRouteResult(origin, destination).copy(
-                    statusMessage = "⚠️ Se sugiere giro en U o búsqueda de vía secundaria fuera del área de peligro."
+                    statusMessage = "⚠️ El destino seleccionado está fuera de la cartografía offline disponible. Por favor, selecciona un punto dentro del área respaldada."
                 )
             )
         }
+
+        val nodesCount = graph.nodes.size
+        val edgesCount = graph.edges.size
+
+        // 2. Medición de Inyección de Bloqueos, Buffer Anti-Invasión (20m) y Dijkstra K-Shortest Paths
+        val calcStartMs = System.currentTimeMillis()
 
         // 2. Inyección Inmediata de Bloqueos (Cualquier incidente activo bloquea la vía y activa el buffer de 20m)
         val activeIncidents = IncidentSharedState.incidents
@@ -120,14 +129,26 @@ object LocalRouteEngine {
             }
         }
 
-        val startNode = graph.findNearestNode(origin.latitude, origin.longitude, maxRadiusMeters = 1000.0)
-        val endNode = graph.findNearestNode(destination.latitude, destination.longitude, maxRadiusMeters = 1000.0)
+        val startNode = graph.findNearestNode(origin.latitude, origin.longitude, maxRadiusMeters = 3000.0)
+        val endNode = graph.findNearestNode(destination.latitude, destination.longitude, maxRadiusMeters = 3000.0)
 
-        if (startNode == null || endNode == null) {
-            Log.d("EVAC_DEBUG", "LocalRouteEngine: [ABORT] Origin or Destination node not found in BBox.")
+        val startDist = if (startNode != null) haversineMeters(origin, startNode.coordinate) else Double.MAX_VALUE
+        val endDist = if (endNode != null) haversineMeters(destination, endNode.coordinate) else Double.MAX_VALUE
+
+        if (startNode == null || startDist > 5000.0) {
+            Log.w("EVAC_DEBUG", "LocalRouteEngine: Origen fuera de cobertura ($startDist m)")
             return@withContext listOf(
                 emptyRouteResult(origin, destination).copy(
-                    statusMessage = "⚠️ Buscando vía segura fuera de la zona de riesgo..."
+                    statusMessage = "⚠️ Tu ubicación actual está fuera de la cartografía offline disponible. Por favor, acércate al área respaldada."
+                )
+            )
+        }
+
+        if (endNode == null || endDist > 5000.0) {
+            Log.w("EVAC_DEBUG", "LocalRouteEngine: Destino fuera de cobertura ($endDist m)")
+            return@withContext listOf(
+                emptyRouteResult(origin, destination).copy(
+                    statusMessage = "⚠️ El destino seleccionado está fuera de la cartografía offline disponible. Por favor, selecciona un punto dentro del área respaldada."
                 )
             )
         }
@@ -290,6 +311,10 @@ object LocalRouteEngine {
         }
 
         val distinctResults = results.distinctBy { it.variant }
+
+        val calcMs = System.currentTimeMillis() - calcStartMs
+        Log.d("EVAC_METRIC", "[ROUTING] Mode: ${profile.name} | Nodes: $nodesCount | Edges: $edgesCount | BBoxLoadTime: ${loadMs}ms | RouteCalcTime: ${calcMs}ms")
+
         if (distinctResults.isEmpty()) {
             return@withContext listOf(
                 emptyRouteResult(origin, destination).copy(

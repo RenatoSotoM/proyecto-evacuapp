@@ -89,7 +89,8 @@ fun ProfileScreen(
             .fillMaxSize()
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
+            .padding(16.dp)
+            .padding(bottom = 90.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // Encabezado con Botón de Cerrar/Iniciar Sesión
@@ -239,6 +240,49 @@ fun ProfileScreen(
             Icon(imageVector = Icons.Default.Edit, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
             Text(text = "EDITAR PREFERENCIAS", fontWeight = FontWeight.Bold)
+        }
+
+        if (user.isLoggedIn) {
+            Button(
+                onClick = {
+                    val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+                    prefs.edit().clear().apply()
+                    RetrofitClient.authToken = null
+                    UserSessionState.clear()
+                    Toast.makeText(context, "Sesión cerrada correctamente", Toast.LENGTH_SHORT).show()
+                    onLogout()
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = com.example.proyecto_evacuapp.ui.theme.DangerRed,
+                    contentColor = Color.White
+                )
+            ) {
+                Icon(imageVector = Icons.Default.Logout, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = "CERRAR SESIÓN", fontWeight = FontWeight.Bold)
+            }
+        }
+
+        OutlinedButton(
+            onClick = {
+                com.example.proyecto_evacuapp.ui.components.IncidentSharedState.clearAllIncidents(context)
+                Toast.makeText(context, "🗑️ Todos los reportes han sido eliminados permanentemente de Room DB", Toast.LENGTH_LONG).show()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = com.example.proyecto_evacuapp.ui.theme.DangerRed
+            )
+        ) {
+            Icon(imageVector = Icons.Default.DeleteForever, contentDescription = null, tint = com.example.proyecto_evacuapp.ui.theme.DangerRed)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(text = "Eliminar todos los reportes (Permanente)", fontWeight = FontWeight.Bold, color = com.example.proyecto_evacuapp.ui.theme.DangerRed)
         }
     }
 

@@ -111,7 +111,7 @@ class RoadGraph {
     fun nearestNode(point: RouteCoordinate): GraphNode? =
         nodes.values.minByOrNull { haversineMeters(it.coordinate, point) }
 
-    fun findNearestNode(lat: Double, lon: Double, maxRadiusMeters: Double = 1000.0): GraphNode? {
+    fun findNearestNode(lat: Double, lon: Double, maxRadiusMeters: Double = 3000.0): GraphNode? {
         var closestNode: GraphNode? = null
         var minDistance = Double.MAX_VALUE
 
@@ -123,7 +123,13 @@ class RoadGraph {
             }
         }
 
-        if (closestNode != null) {
+        if (closestNode == null && nodes.isNotEmpty()) {
+            closestNode = nodes.values.minByOrNull { haversineDistance(lat, lon, it.coordinate.latitude, it.coordinate.longitude) }
+            if (closestNode != null) {
+                val dist = haversineDistance(lat, lon, closestNode.coordinate.latitude, closestNode.coordinate.longitude)
+                Log.d("EVAC_DEBUG", "Nodo fallback mas cercano en BBox encontrado a $dist metros (ID: ${closestNode.id})")
+            }
+        } else if (closestNode != null) {
             Log.d("EVAC_DEBUG", "Nodo encontrado a $minDistance metros (ID: ${closestNode.id})")
         } else {
             Log.e("EVAC_DEBUG", "No se encontró ningún nodo a menos de $maxRadiusMeters m de ($lat, $lon)")

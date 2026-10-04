@@ -1,6 +1,7 @@
 package com.example.proyecto_evacuapp.ui.components
 
 import android.content.Context
+import android.util.Log
 import androidx.compose.runtime.mutableStateListOf
 import com.example.proyecto_evacuapp.data.remote.IncidentResponseDto
 import kotlinx.coroutines.CoroutineScope
@@ -180,6 +181,10 @@ object IncidentSharedState {
         }
     }
 
+    fun verifyIncident(localId: String) {
+        confirmIncident(localId)
+    }
+
     fun confirmIncident(localId: String) {
         updateVote(
             localId = localId,
@@ -205,31 +210,24 @@ object IncidentSharedState {
         localId: String,
         isConfirmation: Boolean
     ) {
-        scope.launch(Dispatchers.Main.immediate) {
-            val index = incidentList.indexOfFirst {
-                it.localId == localId
-            }
+        scope.launch(Dispatchers.IO) {
+            val current = incidentList.find { it.localId == localId || it.remoteId == localId }
+                ?: (if (::incidentDao.isInitialized) incidentDao.getByLocalId(localId)?.toSharedIncident() else null)
 
-            if (index < 0 || index >= incidentList.size) return@launch
+            if (current == null) return@launch
 
-            val current = incidentList[index]
+            val inferStartNs = System.nanoTime()
+            val newAlpha = if (isConfirmation) current.alpha + 1.0 else current.alpha
+            val newBeta = if (isConfirmation) current.beta else current.beta + 1.0
 
-            val newAlpha = if (isConfirmation) {
-                current.alpha + 1.0
-            } else {
-                current.alpha
-            }
+            val confidence = if (newAlpha + newBeta > 0) newAlpha / (newAlpha + newBeta) else 0.0
+            val validityScore = String.format(java.util.Locale.US, "%.2f", confidence)
+            val inferMs = String.format(java.util.Locale.US, "%.3f", (System.nanoTime() - inferStartNs) / 1_000_000.0)
 
-            val newBeta = if (isConfirmation) {
-                current.beta
-            } else {
-                current.beta + 1.0
-            }
-
-            val confidence = newAlpha / (newAlpha + newBeta)
+            Log.d("EVAC_METRIC", "[ML_ONNX] InferenceTime: ${inferMs}ms | ValidityScore: $validityScore | BetaAlpha: $newAlpha | BetaBeta: $newBeta")
 
             val newStatus = when {
-                confidence >= 0.75 -> IncidentStatus.VERIFIED
+                confidence >= 0.60 -> IncidentStatus.VERIFIED
                 confidence >= 0.50 -> IncidentStatus.PROBABLE
                 else -> IncidentStatus.PENDING
             }
@@ -241,7 +239,9 @@ object IncidentSharedState {
                 updatedAtMillis = System.currentTimeMillis()
             )
 
-            replaceInMemory(updatedIncident)
+            withContext(Dispatchers.Main.immediate) {
+                replaceInMemory(updatedIncident)
+            }
             persist(updatedIncident)
         }
     }

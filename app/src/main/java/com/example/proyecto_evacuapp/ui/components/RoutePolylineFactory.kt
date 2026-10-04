@@ -5,20 +5,19 @@ import android.graphics.DashPathEffect
 import android.graphics.Paint
 import org.osmdroid.views.overlay.Polyline
 
-private const val SELECTED_STROKE_WIDTH = 19f // Ruta segura gruesa y prominente
-private const val ALTERNATE_STROKE_WIDTH = 9f
-private const val ALTERNATE_ALPHA = 160 // 0-255
+private const val SELECTED_STROKE_WIDTH = 20f  // Trazo principal prominente de alta visibilidad
+private const val ALTERNATE_STROKE_WIDTH = 10f
+private const val ALTERNATE_ALPHA = 180 // 0-255
 
-private const val COLOR_PRINCIPAL = "#1565D8" // EvacuBlue (Dobles sentido / Vías principales)
-private const val COLOR_SEGURA = "#00E676"    // Verde brillante de alta visibilidad para ruta segura
-private const val COLOR_ACCESIBLE = "#F59E0B" // Ámbar/Naranja (Un sentido / Vías secundarias)
-private const val COLOR_ALT2 = "#7C3AED"      // Púrpura elegante
+private const val COLOR_SEGURA = "#00E5FF"    // Azul Cian de alta intensidad (P1 / Ruta Segura)
+private const val COLOR_ALT1 = "#FF6D00"      // Naranja de alta visibilidad para rutas alternativas (P2)
+private const val COLOR_ALT2 = "#FFAB00"      // Ámbar brillante (P3)
+private const val COLOR_ACCESIBLE = "#7C3AED" // Púrpura elegante accesibilidad
 
 /**
- * Construye los overlays de mapa con alto contraste para las rutas de evacuación.
- * - Ruta segura activa: Verde brillante y grueso (`#00E676`, 19f).
- * - Vías de doble sentido: Azul neutro de alta visibilidad (`#1565D8`).
- * - Vías alternativas / un sentido: Tonos ámbar/naranja (`#F59E0B`).
+ * Construye los overlays de polilinea para el mapa con colores de alto contraste para situaciones de emergencia:
+ * - Ruta Principal / Segura (P1): Azul Cian brillante de alta intensidad (`#00E5FF`, 20f).
+ * - Ruta Alternativa (P2 / P3): Naranja/Ámbar de alta visibilidad (`#FF6D00` / `#FFAB00`).
  */
 object RoutePolylineFactory {
 
@@ -33,9 +32,27 @@ object RoutePolylineFactory {
         val selected = selectedRoute ?: routes.first()
 
         val overlays = mutableListOf<Polyline>()
+
+        // 1. Trazado de sombra/borde oscuro de alto contraste bajo la ruta seleccionada
+        val outlinePolyline = Polyline().apply {
+            setPoints(selected.points.map { it.toGeoPoint() })
+            outlinePaint.apply {
+                color = AndroidColor.parseColor("#000000")
+                alpha = 200
+                strokeWidth = SELECTED_STROKE_WIDTH + 6f
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+                isAntiAlias = true
+            }
+        }
+        overlays += outlinePolyline
+
+        // 2. Trazados de alternativas
         alternates.forEach { route ->
             overlays += route.toPolyline(isSelected = false, onAlternateClicked)
         }
+
+        // 3. Trazado frontal de la ruta seleccionada
         overlays += selected.toPolyline(isSelected = true, onAlternateClicked)
         return overlays
     }
@@ -51,7 +68,7 @@ object RoutePolylineFactory {
 
         val baseColorHex = when (variant) {
             RouteVariant.SEGURA -> COLOR_SEGURA
-            RouteVariant.ALTERNATIVA_1, RouteVariant.PRINCIPAL -> COLOR_PRINCIPAL
+            RouteVariant.ALTERNATIVA_1, RouteVariant.PRINCIPAL -> COLOR_ALT1
             RouteVariant.ALTERNATIVA_2 -> COLOR_ALT2
             RouteVariant.OFFLINE, RouteVariant.ACCESIBLE -> COLOR_ACCESIBLE
         }
@@ -64,7 +81,7 @@ object RoutePolylineFactory {
             if (isSelected) {
                 this.color = color
                 alpha = 255
-                strokeWidth = if (variant == RouteVariant.SEGURA) SELECTED_STROKE_WIDTH + 2f else SELECTED_STROKE_WIDTH
+                strokeWidth = SELECTED_STROKE_WIDTH
                 pathEffect = null
             } else {
                 this.color = color

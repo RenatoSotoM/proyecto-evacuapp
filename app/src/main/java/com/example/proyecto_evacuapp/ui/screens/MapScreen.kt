@@ -28,6 +28,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.proyecto_evacuapp.R
+import com.example.proyecto_evacuapp.data.UserSessionState
 import com.example.proyecto_evacuapp.data.remote.PointOfInterestResponse
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.data.remote.SafeZoneNearbyDto
@@ -128,7 +129,22 @@ fun MapScreen() {
     val coroutineScope = rememberCoroutineScope()
     val sharedIncidents = IncidentSharedState.incidents
 
-    // ESTADOS DE GPS Y NAVEGACIÓN
+    // Sincronización automática del perfil de movilidad del usuario con el motor de ruteo
+    val userProfileSetting = remember(UserSessionState.currentUser) {
+        val user = UserSessionState.currentUser
+        when {
+            user.requiresAccessibleRoute || user.mobilityType.uppercase() == "PERSONA_MOVILIDAD_REDUCIDA" -> RouteMobilityProfile.REDUCED_MOBILITY
+            user.mobilityType.uppercase() == "PEATON" -> RouteMobilityProfile.WALKING
+            user.mobilityType.uppercase() == "BICICLETA" -> RouteMobilityProfile.BICYCLE
+            else -> RouteMobilityProfile.VEHICLE
+        }
+    }
+    var activeMobilityProfile by remember { mutableStateOf(userProfileSetting) }
+
+    LaunchedEffect(userProfileSetting) {
+        activeMobilityProfile = userProfileSetting
+    }
+
     var isTrackingUser by remember { mutableStateOf(true) }
     var currentLatitude by remember { mutableStateOf<Double?>(null) }
     var currentLongitude by remember { mutableStateOf<Double?>(null) }
@@ -309,7 +325,8 @@ fun MapScreen() {
         targetPoint: GeoPoint,
         targetName: String = "",
         automatic: Boolean = false,
-        isRerouting: Boolean = false
+        isRerouting: Boolean = false,
+        profile: RouteMobilityProfile = activeMobilityProfile
     ) {
         val startLat = currentLatitude
         val startLon = currentLongitude
@@ -347,10 +364,16 @@ fun MapScreen() {
             var osrmAlternatives = emptyList<OsrmRouteResponse>()
             try {
                 val currentBearing = UserLocationState.currentBearing
+                val profileName = when (profile) {
+                    RouteMobilityProfile.VEHICLE -> "Vehículo"
+                    RouteMobilityProfile.WALKING -> "Peatón"
+                    RouteMobilityProfile.REDUCED_MOBILITY -> "Movilidad Reducida"
+                    RouteMobilityProfile.BICYCLE -> "Bicicleta"
+                }
                 osrmAlternatives = OsrmRoutingService.fetchRealStreetRouteAlternatives(
                     start = startPoint,
                     end = targetPoint,
-                    profile = "Vehículo",
+                    profile = profileName,
                     bearing = currentBearing,
                     speedMps = currentSpeedMps
                 )
@@ -381,7 +404,7 @@ fun MapScreen() {
                 val computedAlternatives = LocalRouteEngine.calculateRouteAlternatives(
                     origin = originCoord,
                     destination = destCoord,
-                    profile = RouteMobilityProfile.VEHICLE,
+                    profile = profile,
                     startBearing = UserLocationState.currentBearing
                 )
 
@@ -539,6 +562,7 @@ fun MapScreen() {
                         val distMoved = if (lastCalc != null) newGeoPoint.distanceToAsDouble(lastCalc) else Double.MAX_VALUE
 
                         if (distMoved >= 15.0) {
+                            Toast.makeText(context, "⚠️ Te has desviado de la ruta segura, recalculando vía alterna...", Toast.LENGTH_SHORT).show()
                             calculateRouteToPoint(
                                 targetPoint = customDestination!!,
                                 targetName = customDestinationName,
@@ -773,22 +797,39 @@ fun MapScreen() {
             }
         }
 
-        // GLOSARIO DISCRETO INFERIOR IZQUIERDA (Radios de Cobertura)
-        Surface(
+        // BANNERS DISCRETOS INFERIOR IZQUIERDA (Estado Offline y Anillos)
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(start = 12.dp, bottom = 120.dp),
-            color = Color.Black.copy(alpha = 0.7f),
-            shape = RoundedCornerShape(8.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            Surface(
+                color = Color.Black.copy(alpha = 0.75f),
+                shape = RoundedCornerShape(8.dp)
             ) {
-                Text("🟢 0–5km", style = MaterialTheme.typography.labelSmall, color = SafeGreen)
-                Text("🟡 5–15km", style = MaterialTheme.typography.labelSmall, color = WarningAmber)
-                Text("🔵 15–30km", style = MaterialTheme.typography.labelSmall, color = EvacuBlue)
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("📶 Cartografía Offline (Room DB): Zona respaldada", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                }
+            }
+
+            Surface(
+                color = Color.Black.copy(alpha = 0.7f),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text("🟢 0–5km", style = MaterialTheme.typography.labelSmall, color = SafeGreen)
+                    Text("🟡 5–15km", style = MaterialTheme.typography.labelSmall, color = WarningAmber)
+                    Text("🔵 15–30km", style = MaterialTheme.typography.labelSmall, color = EvacuBlue)
+                }
             }
         }
 
@@ -1243,9 +1284,20 @@ fun MapScreen() {
                 RouteOptionsPanel(
                     routes = routeAlternatives,
                     selectedRoute = selectedRouteVariant,
+                    activeProfile = activeMobilityProfile,
                     onRouteSelected = { variant ->
                         selectedRouteVariant = variant
                         customRoutePoints = variant.points.map { it.toGeoPoint() }
+                    },
+                    onProfileSelected = { newProfile ->
+                        activeMobilityProfile = newProfile
+                        customDestination?.let { dest ->
+                            calculateRouteToPoint(
+                                targetPoint = dest,
+                                targetName = customDestinationName,
+                                profile = newProfile
+                            )
+                        }
                     }
                 )
             }

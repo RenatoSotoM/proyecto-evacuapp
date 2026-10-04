@@ -14,7 +14,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Accessible
 import androidx.compose.material.icons.filled.AltRoute
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.OfflinePin
@@ -22,6 +21,8 @@ import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -46,14 +47,17 @@ import com.example.proyecto_evacuapp.ui.theme.WarningAmber
 import com.example.proyecto_evacuapp.ui.theme.WarningAmberLight
 
 /**
- * Panel deslizable horizontal con las alternativas de ruta calculadas por RouteManager / LocalRouteEngine.
+ * Panel deslizable horizontal con selector de perfil (Vehicular, Peatonal, Movilidad Reducida)
+ * y las alternativas de ruta calculadas por LocalRouteEngine.
  */
 @Composable
 fun RouteOptionsPanel(
     routes: List<LocalRouteResult>,
     selectedRoute: LocalRouteResult?,
+    modifier: Modifier = Modifier,
+    activeProfile: RouteMobilityProfile = RouteMobilityProfile.VEHICLE,
     onRouteSelected: (LocalRouteResult) -> Unit,
-    modifier: Modifier = Modifier
+    onProfileSelected: (RouteMobilityProfile) -> Unit = {}
 ) {
     if (routes.isEmpty()) return
 
@@ -91,11 +95,54 @@ fun RouteOptionsPanel(
         }
 
         Text(
-            text = "Elige tu ruta de evacuación",
+            text = "Perfil de movilidad para la evacuación:",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = TextSecondary
+        )
+
+        // Selector visual de Perfil de Movilidad
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterChip(
+                selected = activeProfile == RouteMobilityProfile.VEHICLE,
+                onClick = { onProfileSelected(RouteMobilityProfile.VEHICLE) },
+                label = { Text("🚗 Vehículo") },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = EvacuBlue,
+                    selectedLabelColor = Color.White
+                )
+            )
+            FilterChip(
+                selected = activeProfile == RouteMobilityProfile.WALKING,
+                onClick = { onProfileSelected(RouteMobilityProfile.WALKING) },
+                label = { Text("🚶 Peatonal") },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = SafeGreen,
+                    selectedLabelColor = Color.White
+                )
+            )
+            FilterChip(
+                selected = activeProfile == RouteMobilityProfile.REDUCED_MOBILITY,
+                onClick = { onProfileSelected(RouteMobilityProfile.REDUCED_MOBILITY) },
+                label = { Text("♿ Sin Escaleras") },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = Color(0xFF7C3AED),
+                    selectedLabelColor = Color.White
+                )
+            )
+        }
+
+        Text(
+            text = "Elige tu ruta de evacuación:",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
             color = TextPrimary
         )
+
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {

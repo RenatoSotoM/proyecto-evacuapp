@@ -333,11 +333,11 @@ fun MapViewOSM(
                 position = incPoint
                 title = "${incident.type.emoji} ${incident.type.displayName}"
                 snippet = buildString {
-                    append("Confianza: ${incident.confidencePercentage}% (α: ${incident.alpha.toInt()}, β: ${incident.beta.toInt()})")
-                    append("\nEstado: ${incident.status.name}")
-                    append("\nSeveridad: ${incident.severity.name}")
+                    append("🧠 Modelo IA Consenso Beta: ${incident.confidencePercentage}% de Validez")
+                    append("\n📊 Confirmaciones (α): ${incident.alpha.toInt()} | Rechazos (β): ${incident.beta.toInt()}")
+                    append("\n🚦 Estado: ${incident.status.name} | Severidad: ${incident.severity.name}")
                     if (incident.description.isNotBlank()) {
-                        append("\n${incident.description}")
+                        append("\n📝 ${incident.description}")
                     }
                 }
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)

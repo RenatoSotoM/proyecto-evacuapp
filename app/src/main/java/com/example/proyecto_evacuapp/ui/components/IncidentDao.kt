@@ -28,6 +28,9 @@ interface IncidentDao {
     )
     suspend fun deleteByLocalId(localId: String)
 
+    @Query("SELECT * FROM incidents WHERE localId = :localId LIMIT 1")
+    suspend fun getByLocalId(localId: String): IncidentEntity?
+
     // --- NUEVOS MÉTODOS PARA PRUEBAS Y LIMPIEZA ---
 
     /**

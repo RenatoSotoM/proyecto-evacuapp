@@ -21,7 +21,9 @@ class IncidentSyncWorker(
 
             Log.d("SyncWorker", "Iniciando sincronización de incidentes local -> NestJS...")
 
+            val syncStartMs = System.currentTimeMillis()
             val localIncidents = dao.observeAll().first()
+            val queueSize = localIncidents.count { it.remoteId == null }
 
             for (incident in localIncidents) {
                 if (incident.remoteId == null) {
@@ -52,6 +54,9 @@ class IncidentSyncWorker(
                     }
                 }
             }
+
+            val syncMs = System.currentTimeMillis() - syncStartMs
+            Log.d("EVAC_METRIC", "[STORE_FORWARD] Status: ONLINE_SYNCED | QueueSize: $queueSize | SyncDuration: ${syncMs}ms")
 
             Result.success()
         } catch (e: Exception) {

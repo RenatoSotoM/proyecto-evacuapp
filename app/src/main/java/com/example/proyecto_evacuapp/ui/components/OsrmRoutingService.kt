@@ -151,7 +151,8 @@ object OsrmRoutingService {
                                 GeoPoint(0.0, 0.0)
                             }
 
-                            val instructionText = buildInstruction(type, modifier, streetName)
+                            val isPedestrian = urlString.contains("routed-foot")
+                            val instructionText = buildInstruction(type, modifier, streetName, isPedestrian)
                             stepsList.add(
                                 StepInstruction(
                                     text = instructionText,
@@ -189,21 +190,38 @@ object OsrmRoutingService {
         }
     }
 
-    private fun buildInstruction(type: String, modifier: String, streetName: String): String {
+    private fun buildInstruction(type: String, modifier: String, streetName: String, isPedestrian: Boolean = false): String {
         val street = if (streetName.isNotBlank()) "por $streetName" else ""
-        return when (type) {
-            "depart" -> "Inicia el recorrido $street".trim()
-            "arrive" -> "Has llegado a tu destino"
-            "turn" -> when (modifier) {
-                "left", "slight left", "sharp left" -> "Gira a la izquierda $street".trim()
-                "right", "slight right", "sharp right" -> "Gira a la derecha $street".trim()
-                "straight" -> "Continúa recto $street".trim()
-                "uturn" -> "Gira en U $street".trim()
-                else -> "Gira $street".trim()
+        return if (isPedestrian) {
+            when (type) {
+                "depart" -> "Inicia tu caminata $street".trim()
+                "arrive" -> "Has llegado a tu destino a pie"
+                "turn" -> when (modifier) {
+                    "left", "slight left", "sharp left" -> "Gira a la izquierda y camina $street".trim()
+                    "right", "slight right", "sharp right" -> "Gira a la derecha y camina $street".trim()
+                    "straight" -> "Continúa caminando recto $street".trim()
+                    "uturn" -> "Da la vuelta y camina por la acera de enfrente".trim()
+                    else -> "Camina $street".trim()
+                }
+                "new name", "continue" -> "Sigue por la acera/sendero $street".trim()
+                "roundabout", "rotary" -> "Cruza con precaución por el paso peatonal $street".trim()
+                else -> "Avanza a pie $street".trim()
             }
-            "new name", "continue" -> "Sigue recto $street".trim()
-            "roundabout", "rotary" -> "En la rotonda toma la salida $street".trim()
-            else -> "Continúa $street".trim()
+        } else {
+            when (type) {
+                "depart" -> "Inicia el recorrido $street".trim()
+                "arrive" -> "Has llegado a tu destino"
+                "turn" -> when (modifier) {
+                    "left", "slight left", "sharp left" -> "Gira a la izquierda $street".trim()
+                    "right", "slight right", "sharp right" -> "Gira a la derecha $street".trim()
+                    "straight" -> "Continúa recto $street".trim()
+                    "uturn" -> "Gira en U $street".trim()
+                    else -> "Gira $street".trim()
+                }
+                "new name", "continue" -> "Sigue recto $street".trim()
+                "roundabout", "rotary" -> "En la rotonda toma la salida $street".trim()
+                else -> "Continúa $street".trim()
+            }
         }
     }
 

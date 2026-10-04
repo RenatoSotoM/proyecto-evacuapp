@@ -50,10 +50,8 @@ class RoadNetworkRepository {
                         RoadNodeEntity(id = id, latitude = lat, longitude = lon)
                     } ?: emptyList()
 
-                    val nonVehicularHighways = setOf("footway", "pedestrian", "steps", "path", "bridleway", "cycleway", "corridor")
                     val edgeEntities = response?.edges?.mapNotNull { edgeDto ->
                         val hType = edgeDto.highwayType?.lowercase() ?: "residential"
-                        if (hType in nonVehicularHighways) return@mapNotNull null
                         val id = edgeDto.id ?: return@mapNotNull null
                         val fromId = edgeDto.fromNodeId ?: return@mapNotNull null
                         val toId = edgeDto.toNodeId ?: return@mapNotNull null
@@ -61,13 +59,19 @@ class RoadNetworkRepository {
                         val isOneway = edgeDto.oneway ?: false
                         val bidirectional = (edgeDto.bidirectional ?: true) && !isOneway
 
+                        val accessibilityPenalty = when (hType) {
+                            "steps" -> 1.0 // Escaleras catalogadas con la máxima penalización de accesibilidad
+                            "footway", "pedestrian", "path" -> 0.0 // Senderos planos accesibles
+                            else -> edgeDto.accessibilityPenalty ?: 0.05
+                        }
+
                         RoadEdgeEntity(
                             id = id,
                             fromNodeId = fromId,
                             toNodeId = toId,
                             distanceMeters = dist,
                             riskWeight = edgeDto.riskWeight ?: 0.0,
-                            accessibilityPenalty = edgeDto.accessibilityPenalty ?: 0.05,
+                            accessibilityPenalty = accessibilityPenalty,
                             isBlocked = edgeDto.isBlocked ?: false,
                             isBidirectional = bidirectional
                         )
@@ -99,10 +103,15 @@ class RoadNetworkRepository {
             val dao = db.roadGraphDao()
             ensureJsonImportedIntoRoom(context, dao)
 
-            val minLat = minOf(origin.latitude, destination.latitude) - margin
-            val maxLat = maxOf(origin.latitude, destination.latitude) + margin
-            val minLon = minOf(origin.longitude, destination.longitude) - margin
-            val maxLon = maxOf(origin.longitude, destination.longitude) + margin
+            // Cálculo Bounding Box Bidireccional envolviendo origen y destino con margen adaptativo de seguridad (~3 km)
+            val distLat = Math.abs(origin.latitude - destination.latitude)
+            val distLon = Math.abs(origin.longitude - destination.longitude)
+            val adaptiveMargin = maxOf(margin, minOf(distLat, distLon) * 0.25).coerceAtLeast(0.03)
+
+            val minLat = minOf(origin.latitude, destination.latitude) - adaptiveMargin
+            val maxLat = maxOf(origin.latitude, destination.latitude) + adaptiveMargin
+            val minLon = minOf(origin.longitude, destination.longitude) - adaptiveMargin
+            val maxLon = maxOf(origin.longitude, destination.longitude) + adaptiveMargin
 
             val nodeEntities = dao.getNodesInBBox(minLat, maxLat, minLon, maxLon)
             val edgeEntities = dao.getEdgesInBBox(minLat, maxLat, minLon, maxLon)
