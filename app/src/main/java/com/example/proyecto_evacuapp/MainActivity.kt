@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
@@ -234,6 +235,7 @@ fun MainTabsContainer(
     val tabs = listOf(
         BottomNavTab("Mapa", Icons.Default.Map),
         BottomNavTab("Reportes", Icons.Default.ReportProblem),
+        BottomNavTab("Canal", Icons.Default.CellTower),
         BottomNavTab("Alertas", Icons.Default.Notifications),
         BottomNavTab("Perfil", Icons.Default.Person)
     )
@@ -281,8 +283,14 @@ fun MainTabsContainer(
             when (selectedTabIndex) {
                 0 -> MapScreen()
                 1 -> ReportsScreen()
-                2 -> AlertsScreen()
-                3 -> ProfileScreen()
+                2 -> com.example.proyecto_evacuapp.ui.screens.NetworkMessagesScreen(
+                    onNavigateToMapWithPoint = { point, name ->
+                        selectedTabIndex = 0
+                        onStartStandardNav(name, point)
+                    }
+                )
+                3 -> AlertsScreen()
+                4 -> ProfileScreen()
             }
         }
     }

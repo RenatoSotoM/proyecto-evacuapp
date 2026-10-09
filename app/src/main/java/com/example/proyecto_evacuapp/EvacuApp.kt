@@ -20,6 +20,12 @@ class EvacuApp : Application() {
         IncidentSharedState.initialize(database)
         com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.initialize(applicationContext)
 
+        // Inicialización del Módulo de Comunicaciones Offline de Producción (SMS & Bluetooth RFCOMM)
+        com.example.proyecto_evacuapp.comm.EmergencyCommManager.initialize(
+            applicationContext,
+            CoroutineScope(Dispatchers.IO)
+        )
+
         val prefs = getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
         val token = prefs.getString("jwt_token", null)
 
