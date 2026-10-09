@@ -16,10 +16,7 @@ import org.osmdroid.views.overlay.Overlay
 import org.osmdroid.views.overlay.Polygon
 import com.example.proyecto_evacuapp.R
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -228,24 +225,59 @@ fun MapViewOSM(
         mapView.invalidate()
     }
 
-    // Actualizar Ubicación de Usuario y Orientación por Brújula (Modo Waze: centrado y rotación de mapa con bearing)
+    // Actualizar Ubicación de Usuario Suave (Snap-to-Road + Interpolar 60fps sin tirones)
+    var currentAnimator by remember { androidx.compose.runtime.mutableStateOf<android.animation.ValueAnimator?>(null) }
+
     LaunchedEffect(latitude, longitude, isTrackingUser, UserLocationState.currentBearing) {
         if (latitude != null && longitude != null) {
-            val userLocation = GeoPoint(latitude, longitude)
-            userMarker.position = userLocation
-            val bearing = UserLocationState.currentBearing ?: 0f
-            userMarker.rotation = bearing
-            userMarker.isEnabled = true
+            val snappedCoord = com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.snapCoordinateToNearestGraphEdge(latitude, longitude)
+            val targetLocation = snappedCoord.toGeoPoint()
+            val targetBearing = UserLocationState.currentBearing ?: 0f
 
-            if (isTrackingUser) {
-                mapView.controller.setCenter(userLocation)
-                if (bearing >= 0f) {
-                    mapView.mapOrientation = -bearing
+            // Estabilizar orientación del mapa con el Norte Hacia Arriba (0°) para mantener etiquetas siempre derechas
+            mapView.mapOrientation = 0f
+
+            val startPos = userMarker.position
+            if (startPos == null || (startPos.latitude == 0.0 && startPos.longitude == 0.0)) {
+                userMarker.position = targetLocation
+                userMarker.rotation = targetBearing
+                userMarker.isEnabled = true
+                if (isTrackingUser) {
+                    mapView.controller.setCenter(targetLocation)
                 }
+                mapView.invalidate()
             } else {
-                mapView.mapOrientation = 0f
+                currentAnimator?.cancel()
+                val startLat = startPos.latitude
+                val startLon = startPos.longitude
+                val startBearing = userMarker.rotation
+
+                val anim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+                    duration = 800L
+                    interpolator = android.view.animation.LinearInterpolator()
+                    addUpdateListener { animator ->
+                        val f = animator.animatedValue as Float
+                        val interpLat = startLat + (targetLocation.latitude - startLat) * f
+                        val interpLon = startLon + (targetLocation.longitude - startLon) * f
+                        val interpPoint = GeoPoint(interpLat, interpLon)
+                        userMarker.position = interpPoint
+
+                        if (targetBearing >= 0f) {
+                            val shortAngle = ((((targetBearing - startBearing) % 360) + 540) % 360) - 180
+                            val interpBearing = startBearing + shortAngle * f
+                            userMarker.rotation = interpBearing
+                        }
+
+                        userMarker.isEnabled = true
+                        if (isTrackingUser) {
+                            mapView.controller.setCenter(interpPoint)
+                        }
+                        mapView.invalidate()
+                    }
+                }
+                currentAnimator = anim
+                anim.start()
             }
-            mapView.invalidate()
         }
     }
 
@@ -309,31 +341,48 @@ fun MapViewOSM(
         mapView.invalidate()
     }
 
-    // Renderizar Incidentes y Radio de Impacto
-    LaunchedEffect(incidents) {
+    // Animar escala de pulso estilo Waze para alertas de emergencia
+    var pulseScale by remember { mutableFloatStateOf(1.0f) }
+    LaunchedEffect(Unit) {
+        var direction = 1
+        while (true) {
+            kotlinx.coroutines.delay(40L)
+            pulseScale += 0.015f * direction
+            if (pulseScale >= 1.25f) direction = -1
+            if (pulseScale <= 0.90f) direction = 1
+        }
+    }
+
+    // Renderizar Incidentes y Radio de Impacto Animado Estilo Waze
+    LaunchedEffect(incidents, pulseScale) {
         incidentsOverlay.items.clear()
         incidents.forEach { incident ->
             val incPoint = GeoPoint(incident.latitude, incident.longitude)
 
-            val impactRadiusMeters = when (incident.severity) {
+            val baseImpactRadiusMeters = when (incident.severity) {
                 IncidentSeverity.CRITICA, IncidentSeverity.ALTA -> 100.0
                 IncidentSeverity.MEDIA -> 50.0
                 IncidentSeverity.BAJA -> 25.0
             }
+            val impactRadiusMeters = baseImpactRadiusMeters * pulseScale
+
             val circlePoints = Polygon.pointsAsCircle(incPoint, impactRadiusMeters)
             val circleOverlay = Polygon(mapView).apply {
                 points = circlePoints
-                fillPaint.color = AndroidColor.argb(45, 220, 38, 38)
+                fillPaint.color = AndroidColor.argb((45 / pulseScale).toInt().coerceIn(15, 60), 220, 38, 38)
                 outlinePaint.color = AndroidColor.parseColor("#DC2626")
-                outlinePaint.strokeWidth = 3f
+                outlinePaint.strokeWidth = 3f * pulseScale
             }
             incidentsOverlay.add(circleOverlay)
+
+            val relTimeText = formatRelativeTime(incident.createdAtMillis)
 
             val marker = Marker(mapView).apply {
                 position = incPoint
                 title = "${incident.type.emoji} ${incident.type.displayName}"
                 snippet = buildString {
-                    append("🧠 Modelo IA Consenso Beta: ${incident.confidencePercentage}% de Validez")
+                    append("⏱️ Reporte emitido $relTimeText")
+                    append("\n🧠 Modelo IA Consenso Beta: ${incident.confidencePercentage}% de Validez")
                     append("\n📊 Confirmaciones (α): ${incident.alpha.toInt()} | Rechazos (β): ${incident.beta.toInt()}")
                     append("\n🚦 Estado: ${incident.status.name} | Severidad: ${incident.severity.name}")
                     if (incident.description.isNotBlank()) {
@@ -510,4 +559,18 @@ private fun getScaledMarkerDrawable(context: Context, resId: Int, targetWidthDp:
 
     val scaledBitmap = Bitmap.createScaledBitmap(bitmap, widthPx, heightPx, true)
     return BitmapDrawable(context.resources, scaledBitmap)
+}
+
+fun formatRelativeTime(createdAtMillis: Long): String {
+    val diffMillis = (System.currentTimeMillis() - createdAtMillis).coerceAtLeast(0L)
+    val diffMinutes = diffMillis / 60_000
+    val diffHours = diffMinutes / 60
+    val diffDays = diffHours / 24
+
+    return when {
+        diffMinutes < 1 -> "hace un instante"
+        diffMinutes < 60 -> "hace $diffMinutes min"
+        diffHours < 24 -> "hace $diffHours h"
+        else -> "hace $diffDays día${if (diffDays > 1) "s" else ""}"
+    }
 }

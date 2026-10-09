@@ -160,6 +160,8 @@ private fun distancePointToSegmentMeters(point: GeoPoint, segA: GeoPoint, segB: 
 @Composable
 fun MapScreen() {
     var showSosSheet by remember { mutableStateOf(false) }
+    var showQuickReportDialog by remember { mutableStateOf(false) }
+    var isPowerSaverMode by remember { mutableStateOf(false) }
     var distanceToNextStepMeters by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
@@ -715,10 +717,14 @@ fun MapScreen() {
         }
     }
 
-    DisposableEffect(hasLocationPermission) {
+    DisposableEffect(hasLocationPermission, isPowerSaverMode) {
         if (hasLocationPermission) {
-            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 3000L)
-                .setMinUpdateIntervalMillis(1500L)
+            val interval = if (isPowerSaverMode) 8000L else 3000L
+            val minInterval = if (isPowerSaverMode) 5000L else 1500L
+            val priority = if (isPowerSaverMode) Priority.PRIORITY_BALANCED_POWER_ACCURACY else Priority.PRIORITY_HIGH_ACCURACY
+
+            val locationRequest = LocationRequest.Builder(priority, interval)
+                .setMinUpdateIntervalMillis(minInterval)
                 .build()
             fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
         }
@@ -877,7 +883,37 @@ fun MapScreen() {
                 .padding(end = 16.dp, bottom = 300.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // // DEV ONLY: BOTÓN DE HERRAMIENTAS DE PRUEBA DE BLOQUEO EN VIVO
+            // BOTÓN DE REPORTAR INCIDENTE EN TERRENO
+            FloatingActionButton(
+                onClick = { showQuickReportDialog = true },
+                containerColor = DangerRed,
+                contentColor = Color.White,
+                shape = CircleShape
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ReportProblem,
+                    contentDescription = "Reportar incidente en terreno"
+                )
+            }
+
+            // BOTÓN MODO AHORRO DE BATERÍA
+            FloatingActionButton(
+                onClick = {
+                    isPowerSaverMode = !isPowerSaverMode
+                    val msg = if (isPowerSaverMode) "🔋 Modo Ahorro de Batería activo: Muestreo GPS cada 8s" else "⚡ Modo Normal GPS activo (3s)"
+                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                },
+                containerColor = if (isPowerSaverMode) SafeGreen else SurfaceWhite,
+                contentColor = if (isPowerSaverMode) Color.White else TextSecondary,
+                shape = CircleShape
+            ) {
+                Icon(
+                    imageVector = Icons.Default.BatterySaver,
+                    contentDescription = "Modo Ahorro de Batería"
+                )
+            }
+
+            // DEV ONLY: BOTÓN DE HERRAMIENTAS DE PRUEBA DE BLOQUEO EN VIVO
             FloatingActionButton(
                 onClick = {
                     isDevBlockModeEnabled = !isDevBlockModeEnabled
@@ -963,6 +999,14 @@ fun MapScreen() {
                     }
                 )
             }
+        }
+
+        if (showQuickReportDialog) {
+            QuickReportDialog(
+                currentLat = currentLatitude,
+                currentLon = currentLongitude,
+                onDismiss = { showQuickReportDialog = false }
+            )
         }
 
         // BANNER DE INSTRUCCIÓN AL NAVEGAR O FILTROS SUPERIORES

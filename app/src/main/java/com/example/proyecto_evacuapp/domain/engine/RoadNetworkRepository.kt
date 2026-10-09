@@ -189,5 +189,50 @@ class RoadNetworkRepository {
         }
     }
 
+    suspend fun snapCoordinateToRoad(context: Context?, latitude: Double, longitude: Double, maxDistanceMeters: Double = 35.0): RouteCoordinate = withContext(Dispatchers.IO) {
+        val coord = RouteCoordinate(latitude, longitude)
+        if (context == null) return@withContext coord
+        try {
+            val db = EvacuAppDatabase.getInstance(context)
+            val dao = db.roadGraphDao()
+            ensureJsonImportedIntoRoom(context, dao)
+
+            val minLat = latitude - 0.02
+            val maxLat = latitude + 0.02
+            val minLon = longitude - 0.02
+            val maxLon = longitude + 0.02
+
+            val nodeEntities = dao.getNodesInBBox(minLat, maxLat, minLon, maxLon)
+            val edgeEntities = dao.getEdgesInBBox(minLat, maxLat, minLon, maxLon)
+
+            if (nodeEntities.isEmpty() || edgeEntities.isEmpty()) return@withContext coord
+
+            val graph = RoadGraph()
+            val nodes = nodeEntities.map { GraphNode(id = it.id, coordinate = RouteCoordinate(it.latitude, it.longitude)) }
+            val edges = edgeEntities.map {
+                GraphEdge(
+                    id = it.id,
+                    fromId = it.fromNodeId,
+                    toId = it.toNodeId,
+                    distanceMeters = it.distanceMeters,
+                    riskWeight = it.riskWeight,
+                    accessibilityPenalty = it.accessibilityPenalty,
+                    isBlocked = it.isBlocked,
+                    bidirectional = it.isBidirectional,
+                    blockingIncidentLocalId = it.blockingIncidentLocalId
+                )
+            }
+            graph.load(nodes, edges)
+
+            val edge = graph.nearestEdge(coord, maxDistanceMeters) ?: return@withContext coord
+            val fromNode = graph.nodes[edge.fromId]?.coordinate ?: return@withContext coord
+            val toNode = graph.nodes[edge.toId]?.coordinate ?: return@withContext coord
+
+            return@withContext projectPointToSegment(coord, fromNode, toNode)
+        } catch (e: Exception) {
+            return@withContext coord
+        }
+    }
+
     suspend fun applyIncidents(incidents: List<IncidentEntity>): Boolean = true
 }

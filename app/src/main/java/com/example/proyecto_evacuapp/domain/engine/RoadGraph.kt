@@ -464,6 +464,40 @@ fun distancePointToSegmentMeters(point: RouteCoordinate, start: RouteCoordinate,
     return sqrt(dx * dx + dy * dy)
 }
 
+/** Proyecta una coordenada GPS sobre el segmento de arista [start, end] más cercano. */
+fun projectPointToSegment(point: RouteCoordinate, start: RouteCoordinate, end: RouteCoordinate): RouteCoordinate {
+    val latRef = Math.toRadians(start.latitude)
+    val cosRef = cos(latRef)
+    val r = 6_371_000.0
+
+    fun toXY(p: RouteCoordinate): DoubleArray {
+        val x = Math.toRadians(p.longitude) * cosRef * r
+        val y = Math.toRadians(p.latitude) * r
+        return doubleArrayOf(x, y)
+    }
+
+    val p = toXY(point)
+    val a = toXY(start)
+    val b = toXY(end)
+
+    val abx = b[0] - a[0]
+    val aby = b[1] - a[1]
+    val lengthSq = abx * abx + aby * aby
+
+    val t = if (lengthSq == 0.0) 0.0 else {
+        val apx = p[0] - a[0]
+        val apy = p[1] - a[1]
+        ((apx * abx + apy * aby) / lengthSq).coerceIn(0.0, 1.0)
+    }
+
+    val closestX = a[0] + t * abx
+    val closestY = a[1] + t * aby
+
+    val projLat = Math.toDegrees(closestY / r)
+    val projLon = Math.toDegrees(closestX / (r * cosRef))
+    return RouteCoordinate(projLat, projLon)
+}
+
 /** Calcula el azimut angular en grados [0°, 360°) entre dos coordenadas. */
 fun calculateAzimuthDegrees(start: RouteCoordinate, end: RouteCoordinate): Double {
     val dLon = Math.toRadians(end.longitude - start.longitude)

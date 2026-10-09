@@ -50,6 +50,16 @@ object LocalRouteEngine {
         }
     }
 
+    /**
+     * Proyecta y ajusta la coordenada GPS del usuario al segmento de arista del grafo más cercano (Snap-to-Road).
+     */
+    fun snapCoordinateToNearestGraphEdge(latitude: Double, longitude: Double, maxDistanceMeters: Double = 35.0): RouteCoordinate {
+        val repo = repository ?: return RouteCoordinate(latitude, longitude)
+        return runBlocking(Dispatchers.IO) {
+            repo.snapCoordinateToRoad(appContext, latitude, longitude, maxDistanceMeters)
+        }
+    }
+
     suspend fun calculateRoute(
         origin: RouteCoordinate,
         destination: RouteCoordinate,
