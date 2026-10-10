@@ -99,35 +99,43 @@ private enum class ScreenFlow {
 fun EvacuAppApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    // Verificamos si el token ya existe en SharedPreferences
+    // Verificamos el estado de autenticación y preferencia de Onboarding
     val sharedPreferences = remember { context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE) }
     val savedToken = remember { sharedPreferences.getString("jwt_token", null) }
     val hasToken = !savedToken.isNullOrEmpty()
 
+    val appPrefs = remember { context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE) }
+    val isOnboardingCompleted = remember { appPrefs.getBoolean("onboarding_completed", false) }
+
     // Sincroniza el token guardado con el interceptor de Retrofit
-    // Dentro del Composable principal en MainActivity.kt
     LaunchedEffect(Unit) {
         val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
         val token = prefs.getString("jwt_token", null)
 
         if (!token.isNullOrBlank()) {
             RetrofitClient.authToken = token
-            // Intentar obtener los datos del usuario logueado usando tu método
             try {
                 val response = RetrofitClient.userApiService.getMe()
                 if (response.isSuccessful && response.body() != null) {
                     UserSessionState.updateFromUserMeResponse(response.body()!!)
                 }
             } catch (e: Exception) {
-                // Si falla la red, al menos marcarlo como logueado
                 UserSessionState.currentUser = UserSessionState.currentUser.copy(isLoggedIn = true)
             }
         }
     }
 
-    // Si ya hay token, arrancamos en SPLASH; si no, vamos directo al LOGIN
+    // Control de flujo inicial: Muestra Onboarding la primera vez. Si ya se completó, pasa al flujo principal
     var currentFlow by remember {
-        mutableStateOf(if (hasToken) ScreenFlow.SPLASH else ScreenFlow.LOGIN)
+        mutableStateOf(
+            if (!isOnboardingCompleted) {
+                ScreenFlow.ONBOARDING
+            } else if (hasToken) {
+                ScreenFlow.MAIN_TABS
+            } else {
+                ScreenFlow.MAIN_TABS
+            }
+        )
     }
 
     var selectedEmergency by remember { mutableStateOf("Terremoto") }
@@ -142,28 +150,24 @@ fun EvacuAppApp() {
     var currentRouteDurationSeconds by remember { mutableStateOf<Double?>(null) }
 
     when (currentFlow) {
-        // En MainActivity.kt (dentro de tu cuando evalúas el flujo de pantallas / ScreenFlow)
-
         ScreenFlow.LOGIN -> LoginScreen(
-            onLoginSuccess = {
-                // Redirige a las pestañas principales al iniciar sesión con éxito
-                currentFlow = ScreenFlow.MAIN_TABS
-            },
-            onContinueAsGuest = {
-                // Redirige a las pestañas principales en modo invitado
-                currentFlow = ScreenFlow.MAIN_TABS
-            },
-            onNavigateToRegister = {
-                // Si tienes una pantalla de registro separada
-                currentFlow = ScreenFlow.REGISTER
-            }
+            onLoginSuccess = { currentFlow = ScreenFlow.MAIN_TABS },
+            onContinueAsGuest = { currentFlow = ScreenFlow.MAIN_TABS },
+            onNavigateToRegister = { currentFlow = ScreenFlow.REGISTER }
         )
         ScreenFlow.REGISTER -> RegisterScreen(
-            onRegisterSuccess = { currentFlow = ScreenFlow.SPLASH },
+            onRegisterSuccess = { currentFlow = ScreenFlow.MAIN_TABS },
             onNavigateToLogin = { currentFlow = ScreenFlow.LOGIN }
         )
-        ScreenFlow.SPLASH -> SplashScreen(onContinue = { currentFlow = ScreenFlow.ONBOARDING })
-        ScreenFlow.ONBOARDING -> OnboardingScreen(onFinish = { currentFlow = ScreenFlow.INITIAL_SETUP })
+        ScreenFlow.SPLASH -> SplashScreen(onContinue = {
+            currentFlow = if (!isOnboardingCompleted) ScreenFlow.ONBOARDING else ScreenFlow.MAIN_TABS
+        })
+        ScreenFlow.ONBOARDING -> OnboardingScreen(
+            onFinish = {
+                appPrefs.edit().putBoolean("onboarding_completed", true).apply()
+                currentFlow = ScreenFlow.MAIN_TABS
+            }
+        )
         ScreenFlow.INITIAL_SETUP -> InitialSetupScreen(
             onFinishWithProfile = { mobility, companions ->
                 userMobilityProfile = mobility
