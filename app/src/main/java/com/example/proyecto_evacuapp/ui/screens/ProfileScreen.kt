@@ -18,7 +18,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.proyecto_evacuapp.data.TransportMode
 import com.example.proyecto_evacuapp.data.UserProfile
@@ -40,36 +39,45 @@ fun ProfileScreen(
     onLogout: () -> Unit = {}
 ) {
     var showEditDialog by remember { mutableStateOf(false) }
-    var showLoginDialog by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val user = UserSessionState.currentUser
 
-    // 1. OBTENER DATOS DE NESTJS SOLO SI ESTÁ LOGUEADO
+    // OBTENER DATOS DE NESTJS SI HAY SESIÓN ACTIVA
     LaunchedEffect(user.isLoggedIn) {
         if (user.isLoggedIn) {
             isLoading = true
             try {
-                val response = RetrofitClient.userApiService.getMe()
+                val response = withContext(Dispatchers.IO) {
+                    RetrofitClient.userApiService.getMe()
+                }
                 if (response.isSuccessful && response.body() != null) {
                     val remoteUser = response.body()!!
                     val profile = remoteUser.mobilityProfile
 
                     UserSessionState.currentUser = user.copy(
-                        id = remoteUser.id,
-                        name = remoteUser.name,
-                        email = remoteUser.email,
+                        id = remoteUser.id ?: "",
+                        name = remoteUser.name ?: "Usuario EvacuApp",
+                        email = remoteUser.email ?: "",
                         role = remoteUser.role ?: "USER",
-                        mobilityType = profile?.mobilityType ?: "PEATON",
+                        mobilityType = profile?.mobilityType ?: "VEHICULO",
                         requiresAccessibleRoute = profile?.requiresAccessibleRoute ?: false,
                         travelsWithMinors = profile?.travelsWithMinors ?: false,
                         companionCount = profile?.companionCount ?: 0
                     )
+                } else if (response.code() == 401 || response.code() == 404) {
+                    Log.w("PROFILE", "Usuario o sesión inexistente en servidor (HTTP ${response.code()}). Limpiando sesión...")
+                    val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+                    prefs.edit().clear().apply()
+                    RetrofitClient.authToken = null
+                    UserSessionState.clear()
+                    Toast.makeText(context, "Sesión no encontrada en servidor. Por favor inicia sesión.", Toast.LENGTH_LONG).show()
+                    onLogout()
                 }
             } catch (e: Exception) {
-                Log.e("PROFILE", "Error al obtener perfil desde la API", e)
+                Log.e("PROFILE", "Excepción de red al consultar usuario en servidor: ${e.message}", e)
             } finally {
                 isLoading = false
             }
@@ -93,7 +101,7 @@ fun ProfileScreen(
             .padding(bottom = 90.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Encabezado con Botón de Cerrar/Iniciar Sesión
+        // Encabezado con Botón de Cerrar Sesión / Iniciar Sesión
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -108,15 +116,11 @@ fun ProfileScreen(
 
             TextButton(
                 onClick = {
-                    if (user.isLoggedIn) {
-                        val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
-                        prefs.edit().clear().apply()
-                        RetrofitClient.authToken = null
-                        UserSessionState.clear()
-                        onLogout()
-                    } else {
-                        showLoginDialog = true
-                    }
+                    val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+                    prefs.edit().clear().apply()
+                    RetrofitClient.authToken = null
+                    UserSessionState.clear()
+                    onLogout()
                 }
             ) {
                 Icon(
@@ -136,7 +140,7 @@ fun ProfileScreen(
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = EvacuBlue)
         }
 
-        // Tarjeta de Usuario (Identifica si es Invitado o Usuario Registrado)
+        // Tarjeta de Usuario Registrado
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
@@ -161,13 +165,13 @@ fun ProfileScreen(
                 Spacer(modifier = Modifier.width(16.dp))
                 Column {
                     Text(
-                        text = if (user.isLoggedIn) user.name else "Usuario Invitado",
+                        text = if (user.isLoggedIn && user.name.isNotBlank()) user.name else "Usuario de EvacuApp",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
                     )
                     Text(
-                        text = if (user.isLoggedIn) user.email else "Sin sesión iniciada (Modo Local)",
+                        text = if (user.isLoggedIn && user.email.isNotBlank()) user.email else "Sin sesión activa",
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextSecondary
                     )
@@ -175,7 +179,6 @@ fun ProfileScreen(
             }
         }
 
-        // Banner promocional para Invitados
         if (!user.isLoggedIn) {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -183,22 +186,22 @@ fun ProfileScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "💡 Modo Invitado activo",
+                        text = "🔒 Sesión requerida",
                         fontWeight = FontWeight.Bold,
                         color = EvacuBlue
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Tus preferencias se guardan solo en este dispositivo. Inicia sesión para sincronizarlas con el servidor.",
+                        text = "Inicia sesión para sincronizar tus parámetros de movilidad y zonas de evacuación con el servidor.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextPrimary
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     TextButton(
-                        onClick = { showLoginDialog = true },
+                        onClick = { onLogout() },
                         modifier = Modifier.align(Alignment.End)
                     ) {
-                        Text("Iniciar sesión / Registrarse", fontWeight = FontWeight.Bold, color = EvacuBlue)
+                        Text("Ir a Iniciar Sesión", fontWeight = FontWeight.Bold, color = EvacuBlue)
                     }
                 }
             }
@@ -292,32 +295,18 @@ fun ProfileScreen(
             currentProfile = user,
             onDismiss = { showEditDialog = false },
             onSave = { updatedProfile ->
-                // Guardar localmente
                 UserSessionState.currentUser = updatedProfile
                 showEditDialog = false
 
-                // Sincronizar solo si hay sesión iniciada
                 if (user.isLoggedIn) {
                     scope.launch {
                         val success = syncMobilityProfileToBackend(updatedProfile)
-                        val msg = if (success) "Preferencias guardadas en el servidor" else "Guardado localmente (sin conexión)"
+                        val msg = if (success) "Preferencias guardadas en el servidor" else "Guardado localmente"
                         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                     }
                 } else {
-                    Toast.makeText(context, "Preferencias guardadas localmente (Invitado)", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Preferencias guardadas localmente", Toast.LENGTH_SHORT).show()
                 }
-            }
-        )
-    }
-
-    // Diálogo de Login Rápido
-    if (showLoginDialog) {
-        LoginRegisterDialog(
-            onDismiss = { showLoginDialog = false },
-            onLoginSuccess = { name, email ->
-                UserSessionState.currentUser = user.copy(name = name, email = email, isLoggedIn = true)
-                showLoginDialog = false
-                Toast.makeText(context, "Sesión iniciada como $name", Toast.LENGTH_SHORT).show()
             }
         )
     }
@@ -450,59 +439,6 @@ fun EditPreferencesDialog(
 }
 
 @Composable
-fun LoginRegisterDialog(
-    onDismiss: () -> Unit,
-    onLoginSuccess: (String, String) -> Unit
-) {
-    var isRegister by remember { mutableStateOf(false) }
-    var nameText by remember { mutableStateOf("") }
-    var emailText by remember { mutableStateOf("") }
-    var passwordText by remember { mutableStateOf("") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (isRegister) "Crear Cuenta" else "Iniciar Sesión", fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (isRegister) {
-                    OutlinedTextField(
-                        value = nameText,
-                        onValueChange = { nameText = it },
-                        label = { Text("Nombre completo") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-                OutlinedTextField(
-                    value = emailText,
-                    onValueChange = { emailText = it },
-                    label = { Text("Correo electrónico") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = passwordText,
-                    onValueChange = { passwordText = it },
-                    label = { Text("Contraseña") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                TextButton(onClick = { isRegister = !isRegister }) {
-                    Text(if (isRegister) "¿Tienes cuenta? Inicia sesión" else "¿No tienes cuenta? Regístrate")
-                }
-            }
-        },
-        confirmButton = {
-            Button(onClick = {
-                val finalName = if (nameText.isBlank()) "Usuario EvacuApp" else nameText
-                onLoginSuccess(finalName, emailText)
-            }) {
-                Text(if (isRegister) "Registrar" else "Ingresar")
-            }
-        },
-        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("Cancelar") } }
-    )
-}
-
-@Composable
 fun ProfileItemRow(title: String, value: String, icon: ImageVector) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -553,7 +489,7 @@ private suspend fun syncMobilityProfileToBackend(profile: UserProfile): Boolean 
             val response = RetrofitClient.userApiService.updateMobilityProfile(dto)
             response.isSuccessful
         } catch (e: Exception) {
-            Log.e("PROFILE", "Error al sincronizar perfil con el servidor", e)
+            Log.e("PROFILE", "Error al sincronizar perfil con el servidor: ${e.message}", e)
             false
         }
     }

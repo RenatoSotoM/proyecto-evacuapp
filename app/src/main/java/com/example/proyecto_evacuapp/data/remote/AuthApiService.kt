@@ -18,9 +18,9 @@ data class RegisterRequest(
 )
 
 data class UserResponseDto(
-    @SerializedName("id") val id: String,
-    @SerializedName("name") val name: String,
-    @SerializedName("email") val email: String,
+    @SerializedName("id") val id: String? = null,
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("email") val email: String? = null,
     @SerializedName("role") val role: String? = "USER"
 )
 

@@ -3,25 +3,25 @@ package com.example.proyecto_evacuapp.data.remote
 import com.google.gson.annotations.SerializedName
 
 data class UserMeResponse(
-    @SerializedName("id") val id: String,
-    @SerializedName("name") val name: String,
-    @SerializedName("email") val email: String,
-    @SerializedName("phone") val phone: String?,
-    @SerializedName("role") val role: String,
-    @SerializedName("active") val active: Boolean,
-    @SerializedName("mobilityProfile") val mobilityProfile: MobilityProfileResponse?,
-    @SerializedName("createdAt") val createdAt: String,
-    @SerializedName("updatedAt") val updatedAt: String
+    @SerializedName("id") val id: String? = null,
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("email") val email: String? = null,
+    @SerializedName("phone") val phone: String? = null,
+    @SerializedName("role") val role: String? = "USER",
+    @SerializedName("active") val active: Boolean? = true,
+    @SerializedName("mobilityProfile") val mobilityProfile: MobilityProfileResponse? = null,
+    @SerializedName("createdAt") val createdAt: String? = null,
+    @SerializedName("updatedAt") val updatedAt: String? = null
 )
 
 data class MobilityProfileResponse(
-    @SerializedName("id") val id: String,
-    @SerializedName("userId") val userId: String,
-    @SerializedName("mobilityType") val mobilityType: String,
-    @SerializedName("requiresAccessibleRoute") val requiresAccessibleRoute: Boolean,
-    @SerializedName("travelsWithMinors") val travelsWithMinors: Boolean,
-    @SerializedName("companionCount") val companionCount: Int,
-    @SerializedName("updatedAt") val updatedAt: String
+    @SerializedName("id") val id: String? = null,
+    @SerializedName("userId") val userId: String? = null,
+    @SerializedName("mobilityType") val mobilityType: String? = "VEHICULO",
+    @SerializedName("requiresAccessibleRoute") val requiresAccessibleRoute: Boolean = false,
+    @SerializedName("travelsWithMinors") val travelsWithMinors: Boolean = false,
+    @SerializedName("companionCount") val companionCount: Int = 0,
+    @SerializedName("updatedAt") val updatedAt: String? = null
 ) {
     val companionDescription: String = when {
         companionCount > 0 && travelsWithMinors -> "$companionCount acompañantes + menores"

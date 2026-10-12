@@ -131,8 +131,10 @@ fun RegisterScreen(
                             prefs.edit().putString("jwt_token", authData.accessToken).apply()
 
                             UserSessionState.currentUser = UserSessionState.currentUser.copy(
-                                name = authData.user.name,
-                                email = authData.user.email,
+                                id = authData.user.id ?: "",
+                                name = authData.user.name ?: nameText.trim(),
+                                email = authData.user.email ?: emailText.trim(),
+                                role = authData.user.role ?: "USER",
                                 isLoggedIn = true
                             )
 

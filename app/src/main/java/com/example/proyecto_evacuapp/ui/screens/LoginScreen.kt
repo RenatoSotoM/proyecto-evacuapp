@@ -8,7 +8,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PersonOutline
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
@@ -36,10 +35,9 @@ import kotlinx.coroutines.withContext
 @Composable
 fun LoginScreen(
     onLoginSuccess: () -> Unit,
-    onContinueAsGuest: () -> Unit,
     onNavigateToRegister: () -> Unit = {}
 ) {
-    var email by remember { mutableStateOf("prueba123@evacuapp.com") }
+    var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
@@ -63,6 +61,14 @@ fun LoginScreen(
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             color = TextPrimary
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "Ingresa con tu cuenta para sincronización segura",
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary
         )
 
         Spacer(modifier = Modifier.height(32.dp))
@@ -130,20 +136,22 @@ fun LoginScreen(
 
                             // 2. Actualizar estado de sesión
                             UserSessionState.currentUser = UserProfile(
-                                id = authResult.user.id,
-                                name = authResult.user.name,
-                                email = authResult.user.email,
+                                id = authResult.user.id ?: "",
+                                name = authResult.user.name ?: "Usuario",
+                                email = authResult.user.email ?: email.trim(),
                                 role = authResult.user.role ?: "USER",
                                 isLoggedIn = true
                             )
 
-                            Toast.makeText(context, "¡Bienvenido ${authResult.user.name}!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "¡Bienvenido ${authResult.user.name ?: "a EvacuApp"}!", Toast.LENGTH_SHORT).show()
                             onLoginSuccess()
                         } else {
-                            Toast.makeText(context, "Credenciales incorrectas", Toast.LENGTH_SHORT).show()
+                            val code = response.code()
+                            val msg = if (code == 401 || code == 404) "Credenciales incorrectas o usuario no encontrado" else "Error al iniciar sesión (Código $code)"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                         }
                     } catch (e: Exception) {
-                        Toast.makeText(context, "Error de conexión con el servidor", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Error de conexión con el servidor: ${e.message}", Toast.LENGTH_SHORT).show()
                     } finally {
                         isLoading = false
                     }
@@ -168,24 +176,6 @@ fun LoginScreen(
         // Enlace a Registro
         TextButton(onClick = onNavigateToRegister) {
             Text(text = "¿No tienes cuenta? Regístrate aquí", color = EvacuBlue, fontWeight = FontWeight.SemiBold)
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // Botón Continuar como Invitado
-        OutlinedButton(
-            onClick = {
-                UserSessionState.clear()
-                onContinueAsGuest()
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp),
-            shape = RoundedCornerShape(26.dp)
-        ) {
-            Icon(imageVector = Icons.Default.PersonOutline, contentDescription = null, tint = TextSecondary)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(text = "Continuar como invitado", color = TextSecondary, fontWeight = FontWeight.SemiBold)
         }
     }
 }

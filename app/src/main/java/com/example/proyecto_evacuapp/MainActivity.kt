@@ -13,7 +13,6 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ReportProblem
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -28,10 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.proyecto_evacuapp.data.UserSessionState
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
@@ -44,6 +40,7 @@ import com.example.proyecto_evacuapp.ui.screens.EmergencyTypeSelectScreen
 import com.example.proyecto_evacuapp.ui.screens.InitialSetupScreen
 import com.example.proyecto_evacuapp.ui.screens.LoginScreen
 import com.example.proyecto_evacuapp.ui.screens.MapScreen
+import com.example.proyecto_evacuapp.ui.screens.NetworkMessagesScreen
 import com.example.proyecto_evacuapp.ui.screens.OnboardingScreen
 import com.example.proyecto_evacuapp.ui.screens.ProfileScreen
 import com.example.proyecto_evacuapp.ui.screens.RegisterScreen
@@ -51,9 +48,7 @@ import com.example.proyecto_evacuapp.ui.screens.ReportsScreen
 import com.example.proyecto_evacuapp.ui.screens.SplashScreen
 import com.example.proyecto_evacuapp.ui.screens.StandardNavigationScreen
 import com.example.proyecto_evacuapp.ui.theme.AppBackground
-import com.example.proyecto_evacuapp.ui.theme.DangerRed
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlue
-import com.example.proyecto_evacuapp.ui.theme.EvacuBlueLight
 import com.example.proyecto_evacuapp.ui.theme.ProyectoevacuappTheme
 import com.example.proyecto_evacuapp.ui.theme.SurfaceWhite
 import com.example.proyecto_evacuapp.ui.theme.TextSecondary
@@ -107,25 +102,7 @@ fun EvacuAppApp() {
     val appPrefs = remember { context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE) }
     val isOnboardingCompleted = remember { appPrefs.getBoolean("onboarding_completed", false) }
 
-    // Sincroniza el token guardado con el interceptor de Retrofit
-    LaunchedEffect(Unit) {
-        val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
-        val token = prefs.getString("jwt_token", null)
-
-        if (!token.isNullOrBlank()) {
-            RetrofitClient.authToken = token
-            try {
-                val response = RetrofitClient.userApiService.getMe()
-                if (response.isSuccessful && response.body() != null) {
-                    UserSessionState.updateFromUserMeResponse(response.body()!!)
-                }
-            } catch (e: Exception) {
-                UserSessionState.currentUser = UserSessionState.currentUser.copy(isLoggedIn = true)
-            }
-        }
-    }
-
-    // Control de flujo inicial: Muestra Onboarding la primera vez. Si ya se completó, pasa al flujo principal
+    // Control de flujo inicial
     var currentFlow by remember {
         mutableStateOf(
             if (!isOnboardingCompleted) {
@@ -133,9 +110,38 @@ fun EvacuAppApp() {
             } else if (hasToken) {
                 ScreenFlow.MAIN_TABS
             } else {
-                ScreenFlow.MAIN_TABS
+                ScreenFlow.LOGIN
             }
         )
+    }
+
+    // Sincroniza el token guardado con el interceptor de Retrofit y valida la sesión con el servidor
+    LaunchedEffect(Unit) {
+        val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+        val token = prefs.getString("jwt_token", null)
+
+        if (!token.isNullOrBlank()) {
+            RetrofitClient.authToken = token
+            try {
+                val response = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    RetrofitClient.userApiService.getMe()
+                }
+                if (response.isSuccessful && response.body() != null) {
+                    UserSessionState.updateFromUserMeResponse(response.body()!!)
+                } else {
+                    android.util.Log.w("AUTH", "Token o usuario inexistente en servidor (HTTP ${response.code()}). Limpiando sesión local...")
+                    prefs.edit().clear().apply()
+                    RetrofitClient.authToken = null
+                    UserSessionState.clear()
+                    currentFlow = ScreenFlow.LOGIN
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AUTH", "Excepción al verificar sesión: ${e.message}")
+            }
+        } else {
+            UserSessionState.clear()
+            currentFlow = ScreenFlow.LOGIN
+        }
     }
 
     var selectedEmergency by remember { mutableStateOf("Terremoto") }
@@ -152,7 +158,6 @@ fun EvacuAppApp() {
     when (currentFlow) {
         ScreenFlow.LOGIN -> LoginScreen(
             onLoginSuccess = { currentFlow = ScreenFlow.MAIN_TABS },
-            onContinueAsGuest = { currentFlow = ScreenFlow.MAIN_TABS },
             onNavigateToRegister = { currentFlow = ScreenFlow.REGISTER }
         )
         ScreenFlow.REGISTER -> RegisterScreen(
@@ -165,7 +170,7 @@ fun EvacuAppApp() {
         ScreenFlow.ONBOARDING -> OnboardingScreen(
             onFinish = {
                 appPrefs.edit().putBoolean("onboarding_completed", true).apply()
-                currentFlow = ScreenFlow.MAIN_TABS
+                currentFlow = if (hasToken) ScreenFlow.MAIN_TABS else ScreenFlow.LOGIN
             }
         )
         ScreenFlow.INITIAL_SETUP -> InitialSetupScreen(
@@ -254,27 +259,24 @@ fun MainTabsContainer(
                     NavigationBarItem(
                         selected = selectedTabIndex == index,
                         onClick = { selectedTabIndex = index },
-                        icon = { Icon(imageVector = tab.icon, contentDescription = tab.label) },
-                        label = { Text(text = tab.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        icon = {
+                            Icon(
+                                imageVector = tab.icon,
+                                contentDescription = tab.label
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = tab.label,
+                                color = if (selectedTabIndex == index) EvacuBlue else TextSecondary
+                            )
+                        },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = EvacuBlue,
-                            selectedTextColor = EvacuBlue,
-                            indicatorColor = EvacuBlueLight,
                             unselectedIconColor = TextSecondary,
-                            unselectedTextColor = TextSecondary
+                            indicatorColor = SurfaceWhite
                         )
                     )
-                }
-            }
-        },
-        floatingActionButton = {
-            if (selectedTabIndex == 0) {
-                FloatingActionButton(
-                    onClick = { selectedTabIndex = 1 },
-                    containerColor = DangerRed,
-                    contentColor = Color.White
-                ) {
-                    Icon(imageVector = Icons.Default.ReportProblem, contentDescription = "Reportar incidente")
                 }
             }
         }
@@ -287,21 +289,10 @@ fun MainTabsContainer(
             when (selectedTabIndex) {
                 0 -> MapScreen()
                 1 -> ReportsScreen()
-                2 -> com.example.proyecto_evacuapp.ui.screens.NetworkMessagesScreen(
-                    onNavigateToMapWithPoint = { point, name ->
-                        selectedTabIndex = 0
-                        onStartStandardNav(name, point)
-                    }
-                )
+                2 -> NetworkMessagesScreen()
                 3 -> AlertsScreen()
-                4 -> ProfileScreen()
+                4 -> ProfileScreen(onLogout = { selectedTabIndex = 0 })
             }
         }
     }
-}
-
-@Preview(showBackground = true, showSystemUi = true)
-@Composable
-fun EvacuAppAppPreview() {
-    ProyectoevacuappTheme { EvacuAppApp() }
 }
