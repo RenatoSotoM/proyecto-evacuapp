@@ -82,7 +82,7 @@ object LocalRouteEngine {
         profile: RouteMobilityProfile = RouteMobilityProfile.VEHICLE,
         blockedSegmentIds: Set<String> = emptySet(),
         startBearing: Float? = null
-    ): List<LocalRouteResult> = withContext(Dispatchers.Default) {
+    ): List<LocalRouteResult> = withContext(Dispatchers.IO) {
         val repo = requireRepository()
         repo.ensureLoadedForRoute(appContext, origin, destination)
 

@@ -11,13 +11,13 @@ data class IncidentNetworkDto(
 )
 
 data class IncidentResponseDto(
-    @SerializedName("id") val id: String,
-    @SerializedName("type") val type: String,
-    @SerializedName("severity") val severity: String,
-    @SerializedName("description") val description: String?,
-    @SerializedName("latitude") val latitude: Double,
-    @SerializedName("longitude") val longitude: Double,
-    @SerializedName("status") val status: String,
+    @SerializedName("id", alternate = ["uuid", "_id", "incidentId", "incident_id"]) val id: String? = null,
+    @SerializedName("type") val type: String? = null,
+    @SerializedName("severity") val severity: String? = null,
+    @SerializedName("description") val description: String? = null,
+    @SerializedName("latitude") val latitude: Double? = 0.0,
+    @SerializedName("longitude") val longitude: Double? = 0.0,
+    @SerializedName("status") val status: String? = "PENDING",
     @SerializedName("alpha") val alpha: Double? = 1.0,
     @SerializedName("beta") val beta: Double? = 1.0
 )

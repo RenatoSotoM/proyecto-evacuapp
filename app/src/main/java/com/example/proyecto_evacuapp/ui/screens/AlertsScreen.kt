@@ -135,12 +135,18 @@ fun AlertsScreen() {
                 val minutesAgo = ((System.currentTimeMillis() - incident.createdAtMillis) / 60000).coerceAtLeast(1)
                 val formattedTime = "Hace $minutesAgo min"
 
+                val repository = remember { com.example.proyecto_evacuapp.data.repository.IncidentRepository(com.example.proyecto_evacuapp.data.remote.RetrofitClient.incidentApiService) }
+
                 AlertCardItem(
                     incident = incident,
                     distance = formattedDistance,
                     time = formattedTime,
                     onVerifyClick = {
-                        IncidentSharedState.confirmIncident(incident.localId)
+                        IncidentSharedState.voteIncidentAndSync(
+                            localId = incident.localId,
+                            voteType = "CONFIRM",
+                            repository = repository
+                        )
                         Toast.makeText(context, "✅ Confirmación registrada (+1 α)", Toast.LENGTH_SHORT).show()
                     }
                 )

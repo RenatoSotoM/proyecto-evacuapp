@@ -235,16 +235,18 @@ fun ReportsScreen() {
 
                         scope.launch {
                             try {
-                                val response = repository.createIncident(newSharedIncident)
+                                val response = repository.createIncident(newSharedIncident, context)
                                 if (response.isSuccessful) {
                                     val saved = response.body()
-                                    if (saved != null) {
+                                    val officialId = saved?.id
+                                    val officialStatus = saved?.status ?: "PENDING"
+                                    if (!officialId.isNullOrBlank()) {
                                         IncidentSharedState.markAsSynced(
                                             localId = localId,
-                                            remoteId = saved.id,
-                                            status = saved.status
+                                            remoteId = officialId,
+                                            status = officialStatus
                                         )
-                                        Log.d("INCIDENT", "Sincronizado con servidor ID: ${saved.id}")
+                                        Log.d("INCIDENT", "Sincronizado con servidor ID: $officialId")
                                     }
                                 } else {
                                     Log.e("INCIDENT", "HTTP ${response.code()}: ${response.errorBody()?.string()}")
@@ -309,63 +311,19 @@ fun ReportsScreen() {
                     report = report,
                     onConfirm = {
                         val targetId = report.localId
-                        val remoteId = report.remoteId
-
-                        IncidentSharedState.confirmIncident(targetId)
-
-                        if (remoteId != null) {
-                            scope.launch {
-                                try {
-                                    val response = repository.voteIncident(
-                                        remoteId = remoteId,
-                                        vote = "CONFIRM"
-                                    )
-                                    if (response.isSuccessful) {
-                                        val updated = response.body()
-                                        if (updated != null) {
-                                            IncidentSharedState.updateVoteFromRemote(
-                                                localId = targetId,
-                                                alpha = updated.alpha ?: 1.0,
-                                                beta = updated.beta ?: 1.0,
-                                                status = updated.status
-                                            )
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e("VOTE", "Error enviando voto remoto", e)
-                                }
-                            }
-                        }
+                        IncidentSharedState.voteIncidentAndSync(
+                            localId = targetId,
+                            voteType = "CONFIRM",
+                            repository = repository
+                        )
                     },
                     onReject = {
                         val targetId = report.localId
-                        val remoteId = report.remoteId
-
-                        IncidentSharedState.rejectIncident(targetId)
-
-                        if (remoteId != null) {
-                            scope.launch {
-                                try {
-                                    val response = repository.voteIncident(
-                                        remoteId = remoteId,
-                                        vote = "REJECT"
-                                    )
-                                    if (response.isSuccessful) {
-                                        val updated = response.body()
-                                        if (updated != null) {
-                                            IncidentSharedState.updateVoteFromRemote(
-                                                localId = targetId,
-                                                alpha = updated.alpha ?: 1.0,
-                                                beta = updated.beta ?: 1.0,
-                                                status = updated.status
-                                            )
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e("VOTE", "Error enviando voto remoto", e)
-                                }
-                            }
-                        }
+                        IncidentSharedState.voteIncidentAndSync(
+                            localId = targetId,
+                            voteType = "REJECT",
+                            repository = repository
+                        )
                     }
                 )
             }

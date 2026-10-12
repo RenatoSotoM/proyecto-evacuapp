@@ -12,12 +12,6 @@ interface IncidentApiService {
     @POST("incidents")
     suspend fun createIncident(@Body dto: IncidentNetworkDto): Response<IncidentResponseDto>
 
-    @GET("incidents")
-    suspend fun getIncidents(): Response<List<IncidentResponseDto>>
-
-    @GET("incidents/active")
-    suspend fun getActiveIncidents(): Response<List<IncidentResponseDto>>
-
     @GET("incidents/nearby")
     suspend fun getNearbyIncidents(
         @Query("lat") lat: Double? = null,

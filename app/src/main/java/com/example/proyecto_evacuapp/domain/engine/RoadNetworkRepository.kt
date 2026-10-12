@@ -37,10 +37,13 @@ class RoadNetworkRepository {
 
     private suspend fun ensureJsonImportedIntoRoom(context: Context, dao: RoadGraphDao) {
         if (dao.countNodes() == 0) {
-            val file = File(context.filesDir, "local_graph_30km.json")
-            if (file.exists() && file.length() > 0L) {
+            val file30 = File(context.filesDir, "local_graph_30km.json")
+            val file15 = File(context.filesDir, "local_graph_15km.json")
+            val fileToRead = if (file30.exists() && file30.length() > 0L) file30 else if (file15.exists() && file15.length() > 0L) file15 else null
+
+            if (fileToRead != null) {
                 try {
-                    val response = FileReader(file).use { reader ->
+                    val response = FileReader(fileToRead).use { reader ->
                         Gson().fromJson(reader, MapGraphResponseDto::class.java)
                     }
                     val nodeEntities = response?.nodes?.mapNotNull {
@@ -83,7 +86,7 @@ class RoadNetworkRepository {
                     if (edgeEntities.isNotEmpty()) {
                         dao.insertEdges(edgeEntities)
                     }
-                    Log.d(TAG, "Importados ${nodeEntities.size} nodos y ${edgeEntities.size} aristas desde JSON a Room DB.")
+                    Log.d(TAG, "Importados ${nodeEntities.size} nodos y ${edgeEntities.size} aristas desde ${fileToRead.name} a Room DB.")
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing local graph JSON into Room: ${e.message}", e)
                 }

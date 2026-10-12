@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.example.proyecto_evacuapp.ui.components.EvacuAppDatabase
+import com.example.proyecto_evacuapp.ui.components.IncidentSharedState
 import com.example.proyecto_evacuapp.ui.components.IncidentSeverity
 import com.example.proyecto_evacuapp.ui.components.IncidentType
 import kotlinx.coroutines.flow.first
@@ -23,10 +24,20 @@ class IncidentSyncWorker(
 
             val syncStartMs = System.currentTimeMillis()
             val localIncidents = dao.observeAll().first()
-            val queueSize = localIncidents.count { it.remoteId == null }
+            val now = System.currentTimeMillis()
+            val maxOfflineReportAgeMs = 24 * 60 * 60 * 1000L // 24 horas máximo de caducidad para reportes offline
+
+            var syncedCount = 0
 
             for (incident in localIncidents) {
                 if (incident.remoteId == null) {
+                    val ageMs = now - incident.createdAtMillis
+                    if (ageMs > maxOfflineReportAgeMs) {
+                        Log.w("SyncWorker", "Reporte local caducado (creado hace ${ageMs / 60000} min). Eliminando de Room DB para evitar re-subir datos obsoletos...")
+                        dao.deleteByLocalId(incident.localId)
+                        continue
+                    }
+
                     val typeEnum = IncidentType.fromApiValue(incident.type)
                     val severityEnum = IncidentSeverity.fromApiValue(incident.severity)
 
@@ -39,15 +50,27 @@ class IncidentSyncWorker(
                     )
 
                     val response = RetrofitClient.incidentApiService.createIncident(dto)
+                    Log.d("DEBUG_ID", "Respuesta cruda del servidor (SyncWorker): $response")
 
                     if (response.isSuccessful) {
                         val serverData: IncidentResponseDto? = response.body()
-                        if (serverData != null) {
-                            val updated = incident.copy(remoteId = serverData.id)
-                            dao.upsert(updated)
-                            Log.d("SyncWorker", "Incidente sincronizado con éxito. ID Remoto NestJS: ${serverData.id}")
+                        val officialId = serverData?.id
+                        val officialStatus = serverData?.status ?: "PENDING"
+                        if (!officialId.isNullOrBlank()) {
+                            Log.d("INCIDENT_MAPPING", "ID LOCAL: ${incident.localId} -> ID OFICIAL RECIBIDO DEL SERVIDOR: $officialId")
+                            
+                            // Reemplazo explícito de remoteId en Room DB
+                            dao.updateRemoteId(incident.localId, officialId, officialStatus)
+
+                            IncidentSharedState.markAsSynced(
+                                localId = incident.localId,
+                                remoteId = officialId,
+                                status = officialStatus
+                            )
+                            syncedCount++
+                            Log.d("SyncWorker", "Incidente sincronizado con éxito. ID Remoto NestJS: $officialId")
                         } else {
-                            Log.w("SyncWorker", "Respuesta HTTP exitosa pero body nulo.")
+                            Log.w("SyncWorker", "Respuesta HTTP exitosa pero body nulo o ID oficial ausente.")
                         }
                     } else {
                         Log.e("SyncWorker", "Error del servidor (${response.code()}): ${response.errorBody()?.string()}")
@@ -56,7 +79,7 @@ class IncidentSyncWorker(
             }
 
             val syncMs = System.currentTimeMillis() - syncStartMs
-            Log.d("EVAC_METRIC", "[STORE_FORWARD] Status: ONLINE_SYNCED | QueueSize: $queueSize | SyncDuration: ${syncMs}ms")
+            Log.d("EVAC_METRIC", "[STORE_FORWARD] Status: ONLINE_SYNCED | SyncedCount: $syncedCount | SyncDuration: ${syncMs}ms")
 
             Result.success()
         } catch (e: Exception) {

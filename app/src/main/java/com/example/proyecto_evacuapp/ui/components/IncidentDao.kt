@@ -20,6 +20,9 @@ interface IncidentDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(incident: IncidentEntity)
 
+    @Query("UPDATE incidents SET remoteId = :serverId, status = :status WHERE localId = :localId")
+    suspend fun updateRemoteId(localId: String, serverId: String, status: String)
+
     @Query(
         """
         DELETE FROM incidents
@@ -31,7 +34,19 @@ interface IncidentDao {
     @Query("SELECT * FROM incidents WHERE localId = :localId LIMIT 1")
     suspend fun getByLocalId(localId: String): IncidentEntity?
 
-    // --- NUEVOS MÉTODOS PARA PRUEBAS Y LIMPIEZA ---
+    // --- PURGADO DE DATOS HUÉRFANOS PARA BACKEND SOURCE OF TRUTH ---
+
+    /**
+     * Elimina los registros sincronizados remotamente cuyo ID ya no existe en el servidor.
+     */
+    @Query("DELETE FROM incidents WHERE remoteId IS NOT NULL AND remoteId NOT IN (:activeRemoteIds)")
+    suspend fun deleteOrphanedRemoteIncidents(activeRemoteIds: List<String>)
+
+    /**
+     * Elimina todos los registros de incidentes remotos cuando el servidor es vaciado/reseteado.
+     */
+    @Query("DELETE FROM incidents WHERE remoteId IS NOT NULL")
+    suspend fun deleteAllRemoteIncidents()
 
     /**
      * Elimina TODOS los reportes registrados en la base de datos local.
