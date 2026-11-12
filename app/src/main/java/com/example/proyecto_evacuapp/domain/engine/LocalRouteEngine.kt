@@ -139,13 +139,36 @@ object LocalRouteEngine {
             }
         }
 
-        val startNode = graph.findNearestNode(origin.latitude, origin.longitude, maxRadiusMeters = 3000.0)
-        val endNode = graph.findNearestNode(destination.latitude, destination.longitude, maxRadiusMeters = 3000.0)
+        var startNode = graph.findNearestNode(origin.latitude, origin.longitude, maxRadiusMeters = 5000.0)
+        var endNode = graph.findNearestNode(destination.latitude, destination.longitude, maxRadiusMeters = 5000.0)
 
-        val startDist = if (startNode != null) haversineMeters(origin, startNode.coordinate) else Double.MAX_VALUE
-        val endDist = if (endNode != null) haversineMeters(destination, endNode.coordinate) else Double.MAX_VALUE
+        var startDist = if (startNode != null) haversineMeters(origin, startNode.coordinate) else Double.MAX_VALUE
+        var endDist = if (endNode != null) haversineMeters(destination, endNode.coordinate) else Double.MAX_VALUE
 
-        if (startNode == null || startDist > 5000.0) {
+        if (endNode == null || endDist > 5000.0 || startNode == null || startDist > 5000.0) {
+            Log.d("EVAC_DEBUG", "LocalRouteEngine: Puntos distantes (pasado Anillo 2) o fuera de BBox de Room. Inyectando malla vial de respaldo (PilotRoadNetworkSeed)...")
+            val seed = PilotRoadNetworkSeed.buildDynamic(origin, destination)
+            val seedNodes = seed.nodes.map { GraphNode(id = it.id, coordinate = RouteCoordinate(it.latitude, it.longitude)) }
+            val seedEdges = seed.edges.map {
+                GraphEdge(
+                    id = it.id,
+                    fromId = it.fromNodeId,
+                    toId = it.toNodeId,
+                    distanceMeters = it.distanceMeters,
+                    riskWeight = it.riskWeight,
+                    accessibilityPenalty = it.accessibilityPenalty,
+                    isBlocked = it.isBlocked,
+                    bidirectional = it.isBidirectional
+                )
+            }
+            graph.load(seedNodes, seedEdges)
+            startNode = graph.findNearestNode(origin.latitude, origin.longitude, maxRadiusMeters = 10000.0) ?: startNode
+            endNode = graph.findNearestNode(destination.latitude, destination.longitude, maxRadiusMeters = 10000.0) ?: endNode
+            startDist = if (startNode != null) haversineMeters(origin, startNode.coordinate) else Double.MAX_VALUE
+            endDist = if (endNode != null) haversineMeters(destination, endNode.coordinate) else Double.MAX_VALUE
+        }
+
+        if (startNode == null) {
             Log.w("EVAC_DEBUG", "LocalRouteEngine: Origen fuera de cobertura ($startDist m)")
             return@withContext listOf(
                 emptyRouteResult(origin, destination).copy(
@@ -154,7 +177,7 @@ object LocalRouteEngine {
             )
         }
 
-        if (endNode == null || endDist > 5000.0) {
+        if (endNode == null) {
             Log.w("EVAC_DEBUG", "LocalRouteEngine: Destino fuera de cobertura ($endDist m)")
             return@withContext listOf(
                 emptyRouteResult(origin, destination).copy(

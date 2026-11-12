@@ -1,6 +1,8 @@
 package com.example.proyecto_evacuapp.ui.screens
 
 import android.content.Context
+import android.util.Log
+import android.util.Patterns
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,7 +26,9 @@ import com.example.proyecto_evacuapp.data.UserSessionState
 import com.example.proyecto_evacuapp.data.remote.RegisterRequest
 import com.example.proyecto_evacuapp.data.remote.RetrofitClient
 import com.example.proyecto_evacuapp.ui.theme.EvacuBlue
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun RegisterScreen(
@@ -34,11 +38,10 @@ fun RegisterScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    // 1. PASO 1: DECLARAR LA VARIABLE DE ESTADO DEL TELÉFONO
     var nameText by remember { mutableStateOf("") }
     var emailText by remember { mutableStateOf("") }
     var passwordText by remember { mutableStateOf("") }
-    var phoneText by remember { mutableStateOf("") } // <- Esta variable guarda el texto del fono
+    var phoneText by remember { mutableStateOf("") }
 
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -64,6 +67,7 @@ fun RegisterScreen(
             onValueChange = { nameText = it },
             label = { Text("Nombre Completo") },
             leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+            singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -74,18 +78,19 @@ fun RegisterScreen(
             onValueChange = { emailText = it },
             label = { Text("Correo Electrónico") },
             leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
+            singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             modifier = Modifier.fillMaxWidth()
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 2. PASO 2: CAMPO DE TEXTO DEL TELÉFONO
         OutlinedTextField(
             value = phoneText,
             onValueChange = { phoneText = it },
             label = { Text("Teléfono (Opcional)") },
             leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
+            singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
             modifier = Modifier.fillMaxWidth()
         )
@@ -95,36 +100,62 @@ fun RegisterScreen(
         OutlinedTextField(
             value = passwordText,
             onValueChange = { passwordText = it },
-            label = { Text("Contraseña") },
+            label = { Text("Contraseña (mínimo 6 caracteres)") },
             leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+            singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth()
         )
 
         errorMessage?.let {
             Spacer(modifier = Modifier.height(8.dp))
-            Text(text = it, color = MaterialTheme.colorScheme.error)
+            Text(text = it, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
         }
 
         Spacer(modifier = Modifier.height(24.dp))
 
         Button(
             onClick = {
+                val name = nameText.trim()
+                val email = emailText.trim()
+                val password = passwordText
+
+                if (name.isBlank()) {
+                    errorMessage = "Por favor ingresa tu nombre completo."
+                    return@Button
+                }
+
+                if (!Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
+                    errorMessage = "Por favor ingresa un correo electrónico válido."
+                    return@Button
+                }
+
+                if (password.length < 6) {
+                    errorMessage = "La contraseña debe tener al menos 6 caracteres."
+                    return@Button
+                }
+
                 scope.launch {
                     isLoading = true
                     errorMessage = null
                     try {
-                        // 3. PASO 3: PASAR phoneText EN LUGAR DE phone EN LA LÍNEA 145
+                        val phoneVal = phoneText.trim().ifBlank { null }
                         val request = RegisterRequest(
-                            name = nameText.trim(),
-                            email = emailText.trim(),
-                            password = passwordText,
-                            phone = phoneText.trim().ifBlank { null } // <- Usa 'phoneText' aquí
+                            name = name,
+                            email = email,
+                            password = password,
+                            phone = phoneVal
                         )
 
-                        val response = RetrofitClient.authApiService.register(request)
+                        Log.d("REGISTER_DIAG", "Enviando registro POST /auth/register: $email | Phone: $phoneVal")
+
+                        val response = withContext(Dispatchers.IO) {
+                            RetrofitClient.authApiService.register(request)
+                        }
+
                         if (response.isSuccessful && response.body() != null) {
                             val authData = response.body()!!
+                            Log.d("REGISTER_DIAG", "Registro exitoso en NestJS: ${authData.user.email}")
                             RetrofitClient.authToken = authData.accessToken
 
                             val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
@@ -132,18 +163,32 @@ fun RegisterScreen(
 
                             UserSessionState.currentUser = UserSessionState.currentUser.copy(
                                 id = authData.user.id ?: "",
-                                name = authData.user.name ?: nameText.trim(),
-                                email = authData.user.email ?: emailText.trim(),
+                                name = authData.user.name ?: name,
+                                email = authData.user.email ?: email,
                                 role = authData.user.role ?: "USER",
                                 isLoggedIn = true
                             )
 
                             onRegisterSuccess()
                         } else {
-                            errorMessage = "Error en el registro (${response.code()})"
+                            val code = response.code()
+                            val rawError = response.errorBody()?.string()
+                            Log.e("REGISTER_DIAG", "HTTP Error $code al registrar: $rawError")
+
+                            errorMessage = when {
+                                code == 400 -> {
+                                    val parsedMessage = parseNestJsErrorString(rawError)
+                                    if (parsedMessage.isNotBlank()) parsedMessage else "Error en la solicitud (400). Revisa los datos ingresados."
+                                }
+                                code == 409 || (rawError != null && rawError.contains("already exists", ignoreCase = true)) -> {
+                                    "El correo electrónico ya está registrado."
+                                }
+                                else -> "Error en el servidor (HTTP $code)"
+                            }
                         }
                     } catch (e: Exception) {
-                        errorMessage = "Error de conexión con el servidor"
+                        Log.e("REGISTER_DIAG", "Excepción al registrar usuario: ${e.message}", e)
+                        errorMessage = "Error de conexión con el servidor. Verifica tu red."
                     } finally {
                         isLoading = false
                     }
@@ -164,5 +209,35 @@ fun RegisterScreen(
         TextButton(onClick = onNavigateToLogin) {
             Text("¿Ya tienes cuenta? Inicia sesión")
         }
+    }
+}
+
+private fun parseNestJsErrorString(rawError: String?): String {
+    if (rawError.isNullOrBlank()) return ""
+    return try {
+        val json = org.json.JSONObject(rawError)
+        if (json.has("message")) {
+            val msgObj = json.get("message")
+            if (msgObj is org.json.JSONArray) {
+                val list = mutableListOf<String>()
+                for (i in 0 until msgObj.length()) {
+                    val item = msgObj.getString(i)
+                    val translated = when {
+                        item.contains("password", ignoreCase = true) -> "La contraseña debe tener al menos 6 caracteres."
+                        item.contains("email", ignoreCase = true) -> "El correo electrónico debe ser válido."
+                        item.contains("already exists", ignoreCase = true) -> "El correo electrónico ya está registrado."
+                        else -> item
+                    }
+                    list.add(translated)
+                }
+                list.distinct().joinToString("\n")
+            } else {
+                msgObj.toString()
+            }
+        } else {
+            ""
+        }
+    } catch (_: Exception) {
+        ""
     }
 }

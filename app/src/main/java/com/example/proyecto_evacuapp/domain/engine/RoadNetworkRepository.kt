@@ -36,12 +36,17 @@ class RoadNetworkRepository {
     }
 
     private suspend fun ensureJsonImportedIntoRoom(context: Context, dao: RoadGraphDao) {
-        if (dao.countNodes() == 0) {
-            val file30 = File(context.filesDir, "local_graph_30km.json")
-            val file15 = File(context.filesDir, "local_graph_15km.json")
-            val fileToRead = if (file30.exists() && file30.length() > 0L) file30 else if (file15.exists() && file15.length() > 0L) file15 else null
+        val file30 = File(context.filesDir, "local_graph_30km.json")
+        val file15 = File(context.filesDir, "local_graph_15km.json")
+        val fileToRead = if (file30.exists() && file30.length() > 0L) file30 else if (file15.exists() && file15.length() > 0L) file15 else null
 
-            if (fileToRead != null) {
+        if (fileToRead != null) {
+            val currentCount = dao.countNodes()
+            val fileModified = fileToRead.lastModified()
+            val prefs = context.getSharedPreferences("road_repo_prefs", Context.MODE_PRIVATE)
+            val lastImportedTime = prefs.getLong("last_imported_${fileToRead.name}", 0L)
+
+            if (currentCount == 0 || fileModified > lastImportedTime || (fileToRead == file30 && currentCount < 1000)) {
                 try {
                     val response = FileReader(fileToRead).use { reader ->
                         Gson().fromJson(reader, MapGraphResponseDto::class.java)
@@ -86,6 +91,7 @@ class RoadNetworkRepository {
                     if (edgeEntities.isNotEmpty()) {
                         dao.insertEdges(edgeEntities)
                     }
+                    prefs.edit().putLong("last_imported_${fileToRead.name}", fileModified).apply()
                     Log.d(TAG, "Importados ${nodeEntities.size} nodos y ${edgeEntities.size} aristas desde ${fileToRead.name} a Room DB.")
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing local graph JSON into Room: ${e.message}", e)
@@ -106,10 +112,11 @@ class RoadNetworkRepository {
             val dao = db.roadGraphDao()
             ensureJsonImportedIntoRoom(context, dao)
 
-            // Cálculo Bounding Box Bidireccional envolviendo origen y destino con margen adaptativo de seguridad (~3 km)
+            // Cálculo Bounding Box Bidireccional envolviendo origen y destino con margen adaptativo de seguridad proporcional
             val distLat = Math.abs(origin.latitude - destination.latitude)
             val distLon = Math.abs(origin.longitude - destination.longitude)
-            val adaptiveMargin = maxOf(margin, minOf(distLat, distLon) * 0.25).coerceAtLeast(0.03)
+            val maxDist = maxOf(distLat, distLon)
+            val adaptiveMargin = maxOf(margin, maxDist * 0.35).coerceAtLeast(0.05)
 
             val minLat = minOf(origin.latitude, destination.latitude) - adaptiveMargin
             val maxLat = maxOf(origin.latitude, destination.latitude) + adaptiveMargin
@@ -120,7 +127,7 @@ class RoadNetworkRepository {
             val edgeEntities = dao.getEdgesInBBox(minLat, maxLat, minLon, maxLon)
 
             if (nodeEntities.isEmpty() || edgeEntities.isEmpty()) {
-                Log.w(TAG, "No se encontraron nodos/aristas en el BBox (margin=$margin) para origin=$origin, dest=$destination")
+                Log.w(TAG, "No se encontraron nodos/aristas en el BBox (margin=$adaptiveMargin) para origin=$origin, dest=$destination")
                 return@withContext null
             }
 
@@ -181,20 +188,19 @@ class RoadNetworkRepository {
                 )
             }
             graph.load(nodes, edges)
-
-            val coord = RouteCoordinate(latitude, longitude)
-            val matchedEdge = graph.nearestMatchingEdge(coord, maxDistanceMeters = maxDistanceMeters)
-                ?: graph.edgesWithinRadius(coord, radiusMeters = maxDistanceMeters).firstOrNull()
-            return@withContext matchedEdge?.id
+            val point = RouteCoordinate(latitude, longitude)
+            val nearestEdge = graph.nearestEdge(point, maxDistanceMeters)
+            return@withContext nearestEdge?.id
         } catch (e: Exception) {
             Log.e(TAG, "Error in snapToNearestEdge: ${e.message}", e)
             null
         }
     }
 
+    suspend fun applyIncidents(incidents: List<IncidentEntity>): Boolean = true
+
     suspend fun snapCoordinateToRoad(context: Context?, latitude: Double, longitude: Double, maxDistanceMeters: Double = 35.0): RouteCoordinate = withContext(Dispatchers.IO) {
-        val coord = RouteCoordinate(latitude, longitude)
-        if (context == null) return@withContext coord
+        if (context == null) return@withContext RouteCoordinate(latitude, longitude)
         try {
             val db = EvacuAppDatabase.getInstance(context)
             val dao = db.roadGraphDao()
@@ -208,7 +214,7 @@ class RoadNetworkRepository {
             val nodeEntities = dao.getNodesInBBox(minLat, maxLat, minLon, maxLon)
             val edgeEntities = dao.getEdgesInBBox(minLat, maxLat, minLon, maxLon)
 
-            if (nodeEntities.isEmpty() || edgeEntities.isEmpty()) return@withContext coord
+            if (nodeEntities.isEmpty() || edgeEntities.isEmpty()) return@withContext RouteCoordinate(latitude, longitude)
 
             val graph = RoadGraph()
             val nodes = nodeEntities.map { GraphNode(id = it.id, coordinate = RouteCoordinate(it.latitude, it.longitude)) }
@@ -226,16 +232,21 @@ class RoadNetworkRepository {
                 )
             }
             graph.load(nodes, edges)
-
-            val edge = graph.nearestEdge(coord, maxDistanceMeters) ?: return@withContext coord
-            val fromNode = graph.nodes[edge.fromId]?.coordinate ?: return@withContext coord
-            val toNode = graph.nodes[edge.toId]?.coordinate ?: return@withContext coord
-
-            return@withContext projectPointToSegment(coord, fromNode, toNode)
+            val point = RouteCoordinate(latitude, longitude)
+            val nearestEdge = graph.nearestEdge(point, maxDistanceMeters)
+            if (nearestEdge != null) {
+                val fromNode = graph.nodes[nearestEdge.fromId]
+                val toNode = graph.nodes[nearestEdge.toId]
+                if (fromNode != null && toNode != null) {
+                    val d1 = haversineMeters(point, fromNode.coordinate)
+                    val d2 = haversineMeters(point, toNode.coordinate)
+                    return@withContext if (d1 <= d2) fromNode.coordinate else toNode.coordinate
+                }
+            }
+            return@withContext RouteCoordinate(latitude, longitude)
         } catch (e: Exception) {
-            return@withContext coord
+            Log.e(TAG, "Error in snapCoordinateToRoad: ${e.message}", e)
+            RouteCoordinate(latitude, longitude)
         }
     }
-
-    suspend fun applyIncidents(incidents: List<IncidentEntity>): Boolean = true
 }
