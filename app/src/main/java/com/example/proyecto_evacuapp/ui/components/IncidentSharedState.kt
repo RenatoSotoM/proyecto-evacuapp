@@ -404,9 +404,34 @@ object IncidentSharedState {
 
             val confidence = if (newAlpha + newBeta > 0) newAlpha / (newAlpha + newBeta) else 0.0
             val validityScore = String.format(java.util.Locale.US, "%.2f", confidence)
-            val inferMs = String.format(java.util.Locale.US, "%.3f", (System.nanoTime() - inferStartNs) / 1_000_000.0)
+            val inferMsDouble = (System.nanoTime() - inferStartNs) / 1_000_000.0
+            val inferMs = String.format(java.util.Locale.US, "%.3f", inferMsDouble)
 
             Log.d("EVAC_METRIC", "[ML_ONNX] InferenceTime: ${inferMs}ms | ValidityScore: $validityScore | BetaAlpha: $newAlpha | BetaBeta: $newBeta")
+
+            val incidentTypeStr = current.type.displayName.replace(",", " ")
+            val incidentCoordsStr = String.format(java.util.Locale.US, "%.5f;%.5f", current.latitude, current.longitude)
+
+            com.example.proyecto_evacuapp.utils.PowerBiCsvLogger.logMetricRow(
+                context = null,
+                ejecucionId = localId.take(8),
+                modo = "Offline",
+                perfil = "Consenso_Beta",
+                tipoRuta = "Evento_ONNX",
+                destinoNombre = incidentTypeStr,
+                destinoCoords = incidentCoordsStr,
+                nodosProcesados = 0,
+                aristasProcesadas = 0,
+                cargaBBoxMs = 0L,
+                calculoRutaMs = 0L,
+                tiempoTotalMs = 0L,
+                distanciaMeters = 0.0,
+                tiempoEstimadoMin = 0,
+                giros = 0,
+                inferenciaOnnxMs = inferMsDouble,
+                tramaBytes = 0,
+                exito = true
+            )
 
             val newStatus = when {
                 confidence >= 0.60 -> IncidentStatus.VERIFIED

@@ -70,24 +70,13 @@ data class RecommendedSafeZone(
 )
 
 private fun formatDistance(meters: Double): String {
-    return if (meters < 1000) {
-        "${meters.toInt()} m"
-    } else {
-        String.format(java.util.Locale.US, "%.1f km", meters / 1000.0)
-    }
+    return LocalRouteEngine.formatDistance(meters)
 }
 
 private fun formatDuration(meters: Double, speedMetersPerSecond: Double): String {
-    val effectiveSpeed = if (speedMetersPerSecond > 1.5) speedMetersPerSecond else 6.94
-    val seconds = (meters / effectiveSpeed).toInt()
-    val minutes = (seconds + 29) / 60
-
-    return when {
-        minutes < 1 -> "Menos de 1 min"
-        minutes == 1 -> "1 min"
-        minutes < 60 -> "$minutes min"
-        else -> "${minutes / 60} h ${minutes % 60} min"
-    }
+    val effectiveSpeed = if (speedMetersPerSecond > 1.0) speedMetersPerSecond else 8.3
+    val durationSeconds = meters / effectiveSpeed
+    return LocalRouteEngine.formatDuration(durationSeconds)
 }
 
 private fun findBlockingIncidentOnRoute(
@@ -245,18 +234,17 @@ fun MapScreen() {
         }
     }
 
-    val dynamicRemainingDistanceMeters by remember(currentLatitude, currentLongitude, customRoutePoints) {
+    val dynamicRemainingDistanceMeters by remember(selectedRouteVariant, currentLatitude, currentLongitude, customRoutePoints) {
         derivedStateOf {
-            if (currentLatitude == null || currentLongitude == null || customRoutePoints.isEmpty()) {
-                0.0
-            } else {
+            selectedRouteVariant?.distanceMeters ?: if (currentLatitude != null && currentLongitude != null && customRoutePoints.isNotEmpty()) {
                 val userPoint = GeoPoint(currentLatitude!!, currentLongitude!!)
                 userPoint.distanceToAsDouble(customRoutePoints.last())
-            }
+            } else 0.0
         }
     }
-    val dynamicDistanceText = formatDistance(dynamicRemainingDistanceMeters)
-    val dynamicDurationText = formatDuration(dynamicRemainingDistanceMeters, currentSpeedMps)
+    val dynamicDistanceText = LocalRouteEngine.formatDistance(dynamicRemainingDistanceMeters)
+    val dynamicDurationText = selectedRouteVariant?.let { LocalRouteEngine.formatDuration(it.durationSeconds) }
+        ?: formatDuration(dynamicRemainingDistanceMeters, currentSpeedMps)
 
     var isNavigating by remember { mutableStateOf(false) }
     var currentStepIndex by remember { mutableIntStateOf(0) }
@@ -444,7 +432,8 @@ fun MapScreen() {
                     origin = originCoord,
                     destination = destCoord,
                     profile = profile,
-                    startBearing = UserLocationState.currentBearing
+                    startBearing = UserLocationState.currentBearing,
+                    destinationName = customDestinationName.ifBlank { "Zona Segura" }
                 )
 
                 if (computedAlternatives.isNotEmpty()) {

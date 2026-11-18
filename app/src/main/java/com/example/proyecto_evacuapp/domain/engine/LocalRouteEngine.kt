@@ -81,7 +81,8 @@ object LocalRouteEngine {
         destination: RouteCoordinate,
         profile: RouteMobilityProfile = RouteMobilityProfile.VEHICLE,
         blockedSegmentIds: Set<String> = emptySet(),
-        startBearing: Float? = null
+        startBearing: Float? = null,
+        destinationName: String? = null
     ): List<LocalRouteResult> = withContext(Dispatchers.IO) {
         val repo = requireRepository()
         repo.ensureLoadedForRoute(appContext, origin, destination)
@@ -349,13 +350,54 @@ object LocalRouteEngine {
         val runtime = Runtime.getRuntime()
         val heapUsedMB = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
         val payloadSizeKB = String.format(java.util.Locale.US, "%.1f", (nodesCount * 64 + edgesCount * 128) / 1024.0)
+        val ejecucionId = java.util.UUID.randomUUID().toString().take(8)
+        val perfilName = when (profile) {
+            RouteMobilityProfile.VEHICLE -> "Vehicular"
+            RouteMobilityProfile.WALKING -> "Peatonal"
+            RouteMobilityProfile.REDUCED_MOBILITY -> "Sin_Escaleras"
+            RouteMobilityProfile.BICYCLE -> "Bicicleta"
+        }
+
+        val cleanDestName = (destinationName?.replace(",", " ")?.trim()?.ifBlank { null }) ?: "Zona_Segura"
+        val destCoordsStr = String.format(java.util.Locale.US, "%.5f;%.5f", destination.latitude, destination.longitude)
 
         for (res in distinctResults) {
             val distMeters = res.distanceMeters.toInt()
             val turns = res.points.size
+            val tipoRuta = when (res.variant) {
+                RouteVariant.SEGURA -> "Ruta_Segura"
+                RouteVariant.ALTERNATIVA_1 -> "Ruta_Alternativa_1"
+                RouteVariant.ALTERNATIVA_2 -> "Ruta_Alternativa_2"
+                RouteVariant.ACCESIBLE -> "Ruta_Accesible"
+                RouteVariant.OFFLINE -> "Ruta_Offline"
+                else -> res.label.replace(" ", "_")
+            }
+            val estimMin = (res.durationSeconds / 60.0).roundToInt().coerceAtLeast(1)
+
             Log.d(
                 "EVAC_METRIC",
                 "[ROUTING] Mode: ${profile.name} | RouteName: ${res.label} | NetworkState: OFFLINE_ROOM_DB | Nodes: $nodesCount | Edges: $edgesCount | BBoxLoadTime: ${loadMs}ms | RouteCalcTime: ${calcMs}ms | HeapMemoryUsedMB: ${heapUsedMB}MB | PayloadSizeKB: ${payloadSizeKB}KB | RouteDistanceMeters: ${distMeters}m | TurnCount: $turns"
+            )
+
+            com.example.proyecto_evacuapp.utils.PowerBiCsvLogger.logMetricRow(
+                context = appContext,
+                ejecucionId = ejecucionId,
+                modo = "Offline",
+                perfil = perfilName,
+                tipoRuta = tipoRuta,
+                destinoNombre = cleanDestName,
+                destinoCoords = destCoordsStr,
+                nodosProcesados = nodesCount,
+                aristasProcesadas = edgesCount,
+                cargaBBoxMs = loadMs,
+                calculoRutaMs = calcMs,
+                tiempoTotalMs = loadMs + calcMs,
+                distanciaMeters = res.distanceMeters,
+                tiempoEstimadoMin = estimMin,
+                giros = turns,
+                inferenciaOnnxMs = 0.0,
+                tramaBytes = 0,
+                exito = true
             )
         }
 
@@ -429,14 +471,21 @@ object LocalRouteEngine {
 
     fun formatDistance(distanceMeters: Double): String {
         return if (distanceMeters >= 1_000) {
-            "${"%.1f".format(distanceMeters / 1_000)} km"
+            val km = distanceMeters / 1_000.0
+            String.format(java.util.Locale.US, "%.1f km", km)
         } else {
             "${distanceMeters.roundToInt()} m"
         }
     }
 
     fun formatDuration(durationSeconds: Double): String {
-        val minutes = (durationSeconds / 60).roundToInt().coerceAtLeast(1)
-        return "$minutes min"
+        val totalMinutes = (durationSeconds / 60.0).roundToInt().coerceAtLeast(1)
+        return if (totalMinutes >= 60) {
+            val hours = totalMinutes / 60
+            val mins = totalMinutes % 60
+            if (mins == 0) "${hours} h" else "${hours} h ${mins} min"
+        } else {
+            "$totalMinutes min"
+        }
     }
 }

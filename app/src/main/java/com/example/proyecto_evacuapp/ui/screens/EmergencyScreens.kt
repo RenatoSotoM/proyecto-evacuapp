@@ -359,15 +359,10 @@ fun EmergencyActiveScreen(
     val finalDestinationPoint = if (hasCustomDestination) selectedDestinationPoint else nearestSafeZone.point
 
     val realDistanceMeters = routeDistanceMeters ?: (userPoint.distanceToAsDouble(finalDestinationPoint) * 1.35)
-    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
-    val currentLocale = configuration.locales[0]
-
-    val distanceText = if (realDistanceMeters >= 1000) {
-        String.format(currentLocale, "%.1f km", realDistanceMeters / 1000.0)
-    } else {
-        "${realDistanceMeters.toInt()} m"
-    }
-    val estimatedTimeMinutes = routeDurationSeconds?.let { (it / 60.0).toInt().coerceAtLeast(1) } ?: (realDistanceMeters / 666.0).toInt().coerceAtLeast(1)
+    val distanceText = com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.formatDistance(realDistanceMeters)
+    val durationText = com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.formatDuration(
+        routeDurationSeconds ?: (realDistanceMeters / 8.3)
+    )
 
     Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
         Column(
@@ -413,7 +408,7 @@ fun EmergencyActiveScreen(
                             }
                             Column {
                                 Text(text = "Tiempo", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                                Text(text = "$estimatedTimeMinutes min", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                Text(text = durationText, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = TextPrimary)
                             }
                             Column {
                                 Text(text = "Riesgo", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
