@@ -84,7 +84,9 @@ class LocationHelper(private val context: Context) : SensorEventListener {
 
         val locationRequest = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY, interval
-        ).setMinUpdateIntervalMillis(minInterval).build()
+        ).setMinUpdateIntervalMillis(minInterval)
+         .setMinUpdateDistanceMeters(5.0f)
+         .build()
 
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
@@ -104,13 +106,29 @@ class LocationHelper(private val context: Context) : SensorEventListener {
 
     private fun processLocationUpdate(location: Location, onLocationReceived: (GeoPoint) -> Unit) {
         val lastLoc = lastLocationPoint
+
+        // 1. FILTRO ANTI-DRIFT POR PRECISIÓN: Descartar si accuracy > 25m (salvo primer fix)
+        if (lastLoc != null && location.hasAccuracy() && location.accuracy > 25.0f) {
+            Log.w(TAG, "Lectura GPS ignorada en LocationHelper por baja precisión (accuracy=${location.accuracy}m > 25m)")
+            return
+        }
+
         val speed = if (location.hasSpeed()) location.speed else 0.0f
 
-        // 1. FILTRO ANTI-TIEMBLA (Jitter Filter):
-        // Si se movió menos de 0.5 metros y la velocidad es nula, omitir la actualización visual
+        // Parametrizar umbrales dinámicos por perfil activo
+        val activeProfile = com.example.proyecto_evacuapp.data.UserSessionState.currentUser.mobilityType.uppercase()
+        val (minSpeed, deadband) = when (activeProfile) {
+            "PERSONA_MOVILIDAD_REDUCIDA" -> 0.35f to 8.0f
+            "PEATON" -> 0.50f to 10.0f
+            else -> 1.00f to 12.0f // VEHICULO, BICICLETA
+        }
+
+        // 2. ESTABILIZACIÓN EN REPOSO (Deadband + MinSpeed):
+        // Si se movió menos que el deadband O si la velocidad es menor al mínimo del perfil, considerar reposo
         if (lastLoc != null) {
             val dist = lastLoc.distanceTo(location)
-            if (dist < 0.5f && speed <= 0.1f) {
+            val isStationary = dist < deadband || (location.hasSpeed() && speed < minSpeed)
+            if (isStationary) {
                 return
             }
         }

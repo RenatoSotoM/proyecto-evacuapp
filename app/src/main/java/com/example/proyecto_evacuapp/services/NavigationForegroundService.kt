@@ -111,11 +111,17 @@ class NavigationForegroundService : Service() {
     private fun startBackgroundLocationUpdates() {
         val locationRequest = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY, 500L
-        ).setMinUpdateIntervalMillis(250L).build()
+        ).setMinUpdateIntervalMillis(250L)
+         .setMinUpdateDistanceMeters(5.0f)
+         .build()
 
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let { location ->
+                    if (location.hasAccuracy() && location.accuracy > 25.0f) {
+                        return
+                    }
+
                     val speedMps = if (location.hasSpeed()) location.speed.toDouble() else 0.0
                     val bearing = if (location.hasBearing()) location.bearing else null
 

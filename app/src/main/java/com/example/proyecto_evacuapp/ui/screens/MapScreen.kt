@@ -214,6 +214,12 @@ fun MapScreen() {
     var isCalculatingRoute by remember { mutableStateOf(false) }
     var isAutomaticEvacuation by remember { mutableStateOf(false) }
 
+    // ESTADO ANTI-DRIFT Y DEBOUNCE PARA NAVEGACIÓN Y GPS
+    var lastMapLocationPoint by remember { mutableStateOf<android.location.Location?>(null) }
+    var offRouteConsecutiveCount by remember { mutableIntStateOf(0) }
+    var offRouteStartTime by remember { mutableStateOf<Long?>(null) }
+    var lastRecalculateEndTime by remember { mutableStateOf(0L) }
+
     // ESTADO DE ESTILO DE MAPA Y ANILLOS DE COBERTURA
     var selectedMapStyle by remember { mutableStateOf(MapStyleMode.NORMAL) }
     var showCoverageRings by remember { mutableStateOf(true) }
@@ -571,46 +577,95 @@ fun MapScreen() {
         object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let { location ->
-                    currentLatitude = location.latitude
-                    currentLongitude = location.longitude
+                    val lastLoc = lastMapLocationPoint
+                    val accuracy = if (location.hasAccuracy()) location.accuracy else 0.0f
+                    val isInitialFix = lastLoc == null
 
-                    if (location.hasSpeed()) {
-                        currentSpeedMps = location.speed.toDouble()
+                    // 1. FILTRO ANTI-DRIFT POR PRECISIÓN (Descartar si accuracy > 25m, salvo primer fix)
+                    if (!isInitialFix && accuracy > 25.0f) {
+                        Log.w("MAP_GPS", "GPS ignorado en MapScreen por baja precisión: accuracy=${accuracy}m > 25m")
+                        return
                     }
-                    if (location.hasBearing()) {
-                        UserLocationState.currentBearing = location.bearing
+
+                    val speedMps = if (location.hasSpeed()) location.speed else 0.0f
+                    val activeProfile = UserSessionState.currentUser.mobilityType.uppercase()
+                    val (minSpeed, deadband, baseDeviation) = when (activeProfile) {
+                        "PERSONA_MOVILIDAD_REDUCIDA" -> Triple(0.35f, 8.0f, 35.0)
+                        "PEATON" -> Triple(0.50f, 10.0f, 40.0)
+                        else -> Triple(1.00f, 12.0f, 50.0) // VEHICULO, BICICLETA
                     }
 
-                    val newGeoPoint = GeoPoint(location.latitude, location.longitude)
-                    UserLocationState.currentLocation = newGeoPoint
+                    val distFromLast = if (lastLoc != null) lastLoc.distanceTo(location) else 100.0f
+                    val isStationary = !isInitialFix && (distFromLast < deadband || (location.hasSpeed() && speedMps < minSpeed))
 
-                    // 1. DETECCIÓN DE DESVÍO REAL DE RUTA (> 40 METROS PERPENDICULAR A LA POLILÍNEA)
+                    // Solo actualizar marcador, rumbo y velocidad en el mapa si NO está en reposo
+                    if (!isStationary) {
+                        lastMapLocationPoint = location
+                        currentLatitude = location.latitude
+                        currentLongitude = location.longitude
+                        if (location.hasSpeed()) currentSpeedMps = speedMps.toDouble()
+                        if (location.hasBearing()) UserLocationState.currentBearing = location.bearing
+
+                        val newGeoPoint = GeoPoint(location.latitude, location.longitude)
+                        UserLocationState.currentLocation = newGeoPoint
+                    }
+
+                    val currentPoint = UserLocationState.currentLocation ?: GeoPoint(location.latitude, location.longitude)
+
+                    // 1. DETECCIÓN DE DESVÍO REAL DE RUTA (Debounce 3 lecturas/8s, Cooldown 20s, Umbral Adaptativo por Perfil)
                     if (isNavigating && customDestination != null && customRoutePoints.isNotEmpty() && !isCalculatingRoute) {
-                        val deviationMeters = distanceToPolylineMeters(newGeoPoint, customRoutePoints)
+                        val now = System.currentTimeMillis()
+                        val isCooldownActive = (now - lastRecalculateEndTime) < 20_000L
+                        val dynamicDeviationThreshold = maxOf(baseDeviation, accuracy.toDouble() * 1.5)
 
-                        if (deviationMeters >= 40.0) {
-                            Log.w("MAP_ROUTE", "Desvío real de ruta detectado: $deviationMeters m fuera de la polilinea. Recalculando...")
-                            Toast.makeText(context, "⚠️ Te has desviado de la ruta segura, recalculando vía alterna...", Toast.LENGTH_SHORT).show()
-                            calculateRouteToPoint(
-                                targetPoint = customDestination!!,
-                                targetName = customDestinationName,
-                                automatic = isAutomaticEvacuation,
-                                isRerouting = true
-                            )
+                        if (!isStationary && !isCooldownActive) {
+                            val deviationMeters = distanceToPolylineMeters(currentPoint, customRoutePoints)
+
+                            if (deviationMeters > dynamicDeviationThreshold) {
+                                offRouteConsecutiveCount++
+                                val startTime = offRouteStartTime ?: now.also { offRouteStartTime = it }
+
+                                if (offRouteConsecutiveCount >= 3 && (now - startTime >= 8000L)) {
+                                    Log.w("MAP_ROUTE", "Desvío sostenido fuera de ruta: $deviationMeters m (> $dynamicDeviationThreshold m) durante ${now - startTime}ms ($offRouteConsecutiveCount lecturas). Recalculando...")
+                                    Toast.makeText(context, "⚠️ Te has desviado de la ruta segura, recalculando vía alterna...", Toast.LENGTH_SHORT).show()
+                                    offRouteConsecutiveCount = 0
+                                    offRouteStartTime = null
+                                    lastRecalculateEndTime = System.currentTimeMillis()
+                                    routeManager.notifyRecalculationFinished()
+
+                                    calculateRouteToPoint(
+                                        targetPoint = customDestination!!,
+                                        targetName = customDestinationName,
+                                        automatic = isAutomaticEvacuation,
+                                        isRerouting = true
+                                    )
+                                }
+                            } else {
+                                offRouteConsecutiveCount = 0
+                                offRouteStartTime = null
+                            }
+                        } else {
+                            offRouteConsecutiveCount = 0
+                            offRouteStartTime = null
                         }
                     }
 
-                    // 2. DETECCIÓN DE CAMBIO DE SENTIDO / VIRAGE (> 90° DURANTE > 3 SEGUNDOS)
+                    // 2. DETECCIÓN DE CAMBIO DE SENTIDO (Bloqueado en reposo, con debounce y cooldown)
                     if (isNavigating && customDestination != null && customRoutePoints.isNotEmpty() && !isCalculatingRoute) {
-                        val userCoord = newGeoPoint.toRouteCoordinate()
+                        val userCoord = currentPoint.toRouteCoordinate()
                         val routeCoords = customRoutePoints.map { it.toRouteCoordinate() }
 
                         routeManager.checkHeadingDeviationAndRecalculate(
                             userPoint = userCoord,
                             userBearing = UserLocationState.currentBearing,
+                            userSpeedMps = currentSpeedMps,
+                            isStationary = isStationary,
+                            minSpeedMps = minSpeed,
                             activeRoutePoints = routeCoords,
                             onTriggerRecalculate = {
                                 Toast.makeText(context, "🔄 Cambio de rumbo detectado. Recalculando ruta...", Toast.LENGTH_SHORT).show()
+                                lastRecalculateEndTime = System.currentTimeMillis()
+                                routeManager.notifyRecalculationFinished()
                                 calculateRouteToPoint(
                                     targetPoint = customDestination!!,
                                     targetName = customDestinationName,
@@ -624,7 +679,7 @@ fun MapScreen() {
                     // 3. GUÍA VOCAL, NOTIFICACIÓN Y ASISTENCIA HÁPTICA DE PASOS DE NAVEGACIÓN
                     if (isNavigating && routeSteps.isNotEmpty() && currentStepIndex < routeSteps.size) {
                         val currentStep = routeSteps[currentStepIndex]
-                        val distanceToStep = newGeoPoint.distanceToAsDouble(currentStep.location)
+                        val distanceToStep = currentPoint.distanceToAsDouble(currentStep.location)
                         distanceToNextStepMeters = distanceToStep.toInt()
 
                         val speedKmH = (currentSpeedMps * 3.6).toInt()
@@ -646,7 +701,7 @@ fun MapScreen() {
                             val isArriveStep = currentStep.modifier.lowercase().contains("arrive") || currentStepIndex == routeSteps.size - 1
 
                             if (isArriveStep) {
-                                val distToDest = customDestination?.let { newGeoPoint.distanceToAsDouble(it) } ?: distanceToStep
+                                val distToDest = customDestination?.let { currentPoint.distanceToAsDouble(it) } ?: distanceToStep
                                 if (distToDest <= 15.0) {
                                     val audioRes = CustomVoicePlayer.getAudioForStep(currentStep.modifier)
                                     CustomVoicePlayer.playAudio(context, audioRes)
@@ -714,6 +769,7 @@ fun MapScreen() {
 
             val locationRequest = LocationRequest.Builder(priority, interval)
                 .setMinUpdateIntervalMillis(minInterval)
+                .setMinUpdateDistanceMeters(5.0f)
                 .build()
             fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
         }

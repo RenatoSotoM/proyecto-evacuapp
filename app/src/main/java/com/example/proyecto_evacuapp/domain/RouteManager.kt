@@ -115,42 +115,76 @@ class RouteManager(
     }
 
     private var headingDeviationStartTime: Long? = null
+    private var headingDeviationCount: Int = 0
+    private var lastRecalculationTime: Long = 0L
+
+    fun notifyRecalculationFinished() {
+        lastRecalculationTime = System.currentTimeMillis()
+        headingDeviationStartTime = null
+        headingDeviationCount = 0
+    }
 
     /**
-     * Detección de cambio de sentido y recálculo automático:
+     * Detección de cambio de sentido y recálculo automático con Debounce y Cooldown:
      * Evalúa si la diferencia angular entre el rumbo del usuario y la dirección de la ruta activa es > 90°
-     * durante más de 3 segundos sostenidos (3000ms), disparando recálculo automático.
+     * durante al menos 3 lecturas sostenidas por >= 8 segundos, bloqueando si el usuario está en reposo
+     * o dentro del periodo de cooldown de 20s.
      */
     fun checkHeadingDeviationAndRecalculate(
         userPoint: RouteCoordinate,
         userBearing: Float?,
+        userSpeedMps: Double? = null,
+        isStationary: Boolean = false,
+        minSpeedMps: Float = 0.5f,
         activeRoutePoints: List<RouteCoordinate>,
         onTriggerRecalculate: () -> Unit
     ) {
+        val now = System.currentTimeMillis()
+
+        // 1. Bloqueo absoluto si el usuario está en reposo o velocidad insuficiente
+        if (isStationary || (userSpeedMps != null && userSpeedMps < minSpeedMps)) {
+            headingDeviationStartTime = null
+            headingDeviationCount = 0
+            return
+        }
+
+        // 2. Cooldown mínimo de 20 segundos entre recálculos finalizados
+        if (now - lastRecalculationTime < 20_000L) {
+            return
+        }
+
         if (userBearing == null || userBearing < 0 || activeRoutePoints.size < 2) {
             headingDeviationStartTime = null
+            headingDeviationCount = 0
             return
         }
 
         val segmentAzimuth = findActiveRouteSegmentAzimuth(userPoint, activeRoutePoints) ?: run {
             headingDeviationStartTime = null
+            headingDeviationCount = 0
             return
         }
 
         val angularDiff = com.example.proyecto_evacuapp.domain.engine.angularDifferenceDegrees(userBearing.toDouble(), segmentAzimuth)
 
         if (angularDiff > 90.0) {
-            val now = System.currentTimeMillis()
             val startTime = headingDeviationStartTime
             if (startTime == null) {
                 headingDeviationStartTime = now
-            } else if (now - startTime >= 3000L) { // 3 segundos sostenidos
-                Log.w(TAG, "Desviación angular de rumbo > 90° durante 3s (${angularDiff.toInt()}° vs tramo ${segmentAzimuth.toInt()}°). Disparando recálculo...")
-                headingDeviationStartTime = null
-                onTriggerRecalculate()
+                headingDeviationCount = 1
+            } else {
+                headingDeviationCount++
+                if (now - startTime >= 8000L && headingDeviationCount >= 3) {
+                    Log.w(TAG, "Desviación angular de rumbo > 90° sostenida durante ${now - startTime}ms (${headingDeviationCount} lecturas). Disparando recálculo...")
+                    headingDeviationStartTime = null
+                    headingDeviationCount = 0
+                    lastRecalculationTime = now
+                    onTriggerRecalculate()
+                }
             }
         } else {
             headingDeviationStartTime = null
+            headingDeviationCount = 0
         }
     }
 
