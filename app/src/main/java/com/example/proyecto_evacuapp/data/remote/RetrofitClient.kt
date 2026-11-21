@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 object RetrofitClient {
 
     private const val EMULATOR_BASE_URL = "http://10.0.2.2:3000/api/v1/"
-    private const val PHYSICAL_BASE_URL = "http://192.168.100.12:3000/api/v1/"
+    private const val PHYSICAL_BASE_URL = "http://10.157.156.204:3000/api/v1/"
 
     /**
      * Permite sobreescribir manualmente la URL base si es necesario.
@@ -35,7 +35,7 @@ object RetrofitClient {
                 || Build.HARDWARE.contains("ranchu")
 
     /**
-     * URL base dinámica que conmuta entre emulador (10.0.2.2) y dispositivo físico (192.168.100.12).
+     * URL base dinámica que conmuta entre emulador (10.0.2.2) y dispositivo físico (10.157.156.204).
      */
     val BASE_URL: String
         get() = customBaseUrl ?: if (isEmulator) EMULATOR_BASE_URL else PHYSICAL_BASE_URL
@@ -66,9 +66,9 @@ object RetrofitClient {
     }
 
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .addInterceptor(loggingInterceptor)
         .addInterceptor { chain ->
             val originalRequest = chain.request()
