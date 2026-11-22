@@ -445,6 +445,8 @@ fun MapViewOSM(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            currentAnimator?.cancel()
+            currentAnimator = null
             lifecycleOwner.lifecycle.removeObserver(observer)
             mapView.onDetach()
         }

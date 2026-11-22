@@ -144,6 +144,74 @@ private fun distancePointToSegmentMeters(point: GeoPoint, segA: GeoPoint, segB: 
     return point.distanceToAsDouble(GeoPoint(projLat, projLon))
 }
 
+private fun projectPointToSegmentWithDistance(
+    point: GeoPoint,
+    start: GeoPoint,
+    end: GeoPoint
+): Pair<GeoPoint, Double> {
+    val pLat = point.latitude
+    val pLon = point.longitude
+    val aLat = start.latitude
+    val aLon = start.longitude
+    val bLat = end.latitude
+    val bLon = end.longitude
+
+    val dLat = bLat - aLat
+    val dLon = bLon - aLon
+
+    if (dLat == 0.0 && dLon == 0.0) {
+        val dist = point.distanceToAsDouble(start)
+        return Pair(start, dist)
+    }
+
+    val uLat = pLat - aLat
+    val uLon = pLon - aLon
+    val t = ((uLat * dLat + uLon * dLon) / (dLat * dLat + dLon * dLon)).coerceIn(0.0, 1.0)
+
+    val projLat = aLat + t * dLat
+    val projLon = aLon + t * dLon
+    val projPoint = GeoPoint(projLat, projLon)
+    val distance = point.distanceToAsDouble(projPoint)
+
+    return Pair(projPoint, distance)
+}
+
+private fun trimPolylineProgressively(
+    userPoint: GeoPoint,
+    polylinePoints: List<GeoPoint>,
+    lastProjectedPoint: GeoPoint?
+): Pair<List<GeoPoint>, GeoPoint?> {
+    if (polylinePoints.size < 2) return Pair(polylinePoints, lastProjectedPoint)
+
+    var closestSegmentIndex = 0
+    var minDistance = Double.MAX_VALUE
+    var bestProjectedPoint = polylinePoints.first()
+
+    for (i in 0 until polylinePoints.size - 1) {
+        val p1 = polylinePoints[i]
+        val p2 = polylinePoints[i + 1]
+        val (proj, dist) = projectPointToSegmentWithDistance(userPoint, p1, p2)
+        if (dist < minDistance) {
+            minDistance = dist
+            closestSegmentIndex = i
+            bestProjectedPoint = proj
+        }
+    }
+
+    // Detalle 2: Evitar redibujar la polilínea visual en OSMdroid si la posición proyectada cambió menos de 2 metros
+    if (lastProjectedPoint != null && bestProjectedPoint.distanceToAsDouble(lastProjectedPoint) < 2.0) {
+        return Pair(emptyList(), lastProjectedPoint)
+    }
+
+    val trimmed = mutableListOf<GeoPoint>()
+    trimmed.add(bestProjectedPoint)
+    for (i in closestSegmentIndex + 1 until polylinePoints.size) {
+        trimmed.add(polylinePoints[i])
+    }
+
+    return Pair(trimmed, bestProjectedPoint)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("MissingPermission")
 @Composable
@@ -214,11 +282,18 @@ fun MapScreen() {
     var isCalculatingRoute by remember { mutableStateOf(false) }
     var isAutomaticEvacuation by remember { mutableStateOf(false) }
 
-    // ESTADO ANTI-DRIFT Y DEBOUNCE PARA NAVEGACIÓN Y GPS
+    // ESTADO ANTI-DRIFT, TRIMMING PROGRESIVO Y DEBOUNCE PARA NAVEGACIÓN Y GPS
     var lastMapLocationPoint by remember { mutableStateOf<android.location.Location?>(null) }
     var offRouteConsecutiveCount by remember { mutableIntStateOf(0) }
     var offRouteStartTime by remember { mutableStateOf<Long?>(null) }
     var lastRecalculateEndTime by remember { mutableStateOf(0L) }
+    var trimmedRoutePoints by remember { mutableStateOf<List<GeoPoint>>(emptyList()) }
+    var lastProjectedRoutePoint by remember { mutableStateOf<GeoPoint?>(null) }
+
+    LaunchedEffect(customRoutePoints) {
+        trimmedRoutePoints = customRoutePoints
+        lastProjectedRoutePoint = null
+    }
 
     // ESTADO DE ESTILO DE MAPA Y ANILLOS DE COBERTURA
     var selectedMapStyle by remember { mutableStateOf(MapStyleMode.NORMAL) }
@@ -721,6 +796,19 @@ fun MapScreen() {
                             }
                         }
                     }
+
+                    // 4. RECORTE PROGRESIVO DE POLILÍNEA VISUAL (Route Trimming sin parpadeo < 2m)
+                    if (isNavigating && customRoutePoints.size >= 2) {
+                        val (newTrimmed, newProjected) = trimPolylineProgressively(
+                            userPoint = currentPoint,
+                            polylinePoints = customRoutePoints,
+                            lastProjectedPoint = lastProjectedRoutePoint
+                        )
+                        if (newTrimmed.isNotEmpty()) {
+                            trimmedRoutePoints = newTrimmed
+                            lastProjectedRoutePoint = newProjected
+                        }
+                    }
                 }
             }
         }
@@ -787,7 +875,7 @@ fun MapScreen() {
             overviewTrigger = overviewTrigger,
             isTrackingUser = isTrackingUser,
             destinationPoint = customDestination,
-            routePoints = customRoutePoints,
+            routePoints = if (isNavigating && trimmedRoutePoints.isNotEmpty()) trimmedRoutePoints else customRoutePoints,
             routeAlternatives = routeAlternatives,
             selectedRouteVariant = selectedRouteVariant,
             incidents = sharedIncidents,

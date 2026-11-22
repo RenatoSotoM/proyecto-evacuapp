@@ -10,4 +10,5 @@ object UserLocationState {
     var currentLocation by mutableStateOf<GeoPoint?>(null)
     var currentBearing by mutableStateOf<Float?>(null)
     var currentSpeedMps by mutableStateOf<Double>(0.0)
+    var currentAccuracyMeters by mutableStateOf<Float>(0.0f)
 }

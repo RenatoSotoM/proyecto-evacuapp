@@ -125,10 +125,12 @@ class NavigationForegroundService : Service() {
                     val speedMps = if (location.hasSpeed()) location.speed.toDouble() else 0.0
                     val bearing = if (location.hasBearing()) location.bearing else null
 
+                    val accuracy = if (location.hasAccuracy()) location.accuracy else 0.0f
                     val currentPoint = GeoPoint(location.latitude, location.longitude)
                     UserLocationState.currentLocation = currentPoint
                     UserLocationState.currentSpeedMps = speedMps
                     UserLocationState.currentBearing = bearing
+                    UserLocationState.currentAccuracyMeters = accuracy
 
                     val speedKmH = (speedMps * 3.6).toInt()
                     evaluateTurnAlertsAndNotification(speedKmH)

@@ -145,9 +145,11 @@ class LocationHelper(private val context: Context) : SensorEventListener {
 
         lastLocationPoint = location
 
+        val accuracy = if (location.hasAccuracy()) location.accuracy else 0.0f
         UserLocationState.currentLocation = GeoPoint(location.latitude, location.longitude)
         UserLocationState.currentSpeedMps = speed.toDouble()
         UserLocationState.currentBearing = bearing
+        UserLocationState.currentAccuracyMeters = accuracy
 
         // 2. BATERÍA ADAPTATIVA - FALLBACK POR GPS (Gama baja / Sin acelerómetro)
         checkGpsBatteryFallback(location, speed)
