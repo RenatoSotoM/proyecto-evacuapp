@@ -665,9 +665,9 @@ fun MapScreen() {
                     val speedMps = if (location.hasSpeed()) location.speed else 0.0f
                     val activeProfile = UserSessionState.currentUser.mobilityType.uppercase()
                     val (minSpeed, deadband, baseDeviation) = when (activeProfile) {
-                        "PERSONA_MOVILIDAD_REDUCIDA" -> Triple(0.35f, 8.0f, 35.0)
-                        "PEATON" -> Triple(0.50f, 10.0f, 40.0)
-                        else -> Triple(1.00f, 12.0f, 50.0) // VEHICULO, BICICLETA
+                        "PERSONA_MOVILIDAD_REDUCIDA" -> Triple(0.35f, 8.0f, 20.0)
+                        "PEATON" -> Triple(0.50f, 10.0f, 20.0)
+                        else -> Triple(1.00f, 12.0f, 22.0) // VEHICULO, BICICLETA
                     }
 
                     val distFromLast = if (lastLoc != null) lastLoc.distanceTo(location) else 100.0f
@@ -687,10 +687,10 @@ fun MapScreen() {
 
                     val currentPoint = UserLocationState.currentLocation ?: GeoPoint(location.latitude, location.longitude)
 
-                    // 1. DETECCIÓN DE DESVÍO REAL DE RUTA (Debounce 3 lecturas/8s, Cooldown 20s, Umbral Adaptativo por Perfil)
+                    // 1. DETECCIÓN DE DESVÍO REAL DE RUTA (Debounce 2 lecturas/2s, Cooldown 4s, Umbral Adaptativo por Perfil)
                     if (isNavigating && customDestination != null && customRoutePoints.isNotEmpty() && !isCalculatingRoute) {
                         val now = System.currentTimeMillis()
-                        val isCooldownActive = (now - lastRecalculateEndTime) < 20_000L
+                        val isCooldownActive = (now - lastRecalculateEndTime) < 4_000L
                         val dynamicDeviationThreshold = maxOf(baseDeviation, accuracy.toDouble() * 1.5)
 
                         if (!isStationary && !isCooldownActive) {
@@ -700,9 +700,9 @@ fun MapScreen() {
                                 offRouteConsecutiveCount++
                                 val startTime = offRouteStartTime ?: now.also { offRouteStartTime = it }
 
-                                if (offRouteConsecutiveCount >= 3 && (now - startTime >= 8000L)) {
+                                if (offRouteConsecutiveCount >= 2 && (now - startTime >= 2000L)) {
                                     Log.w("MAP_ROUTE", "Desvío sostenido fuera de ruta: $deviationMeters m (> $dynamicDeviationThreshold m) durante ${now - startTime}ms ($offRouteConsecutiveCount lecturas). Recalculando...")
-                                    Toast.makeText(context, "⚠️ Te has desviado de la ruta segura, recalculando vía alterna...", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "⚠️ Desvío detectado — Recalculando ruta...", Toast.LENGTH_SHORT).show()
                                     offRouteConsecutiveCount = 0
                                     offRouteStartTime = null
                                     lastRecalculateEndTime = System.currentTimeMillis()

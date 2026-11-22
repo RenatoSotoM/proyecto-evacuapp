@@ -148,8 +148,8 @@ class RouteManager(
             return
         }
 
-        // 2. Cooldown mínimo de 20 segundos entre recálculos finalizados
-        if (now - lastRecalculationTime < 20_000L) {
+        // 2. Cooldown mínimo de 4 segundos entre recálculos finalizados
+        if (now - lastRecalculationTime < 4_000L) {
             return
         }
 
@@ -174,7 +174,7 @@ class RouteManager(
                 headingDeviationCount = 1
             } else {
                 headingDeviationCount++
-                if (now - startTime >= 8000L && headingDeviationCount >= 3) {
+                if (now - startTime >= 2500L && headingDeviationCount >= 2) {
                     Log.w(TAG, "Desviación angular de rumbo > 90° sostenida durante ${now - startTime}ms (${headingDeviationCount} lecturas). Disparando recálculo...")
                     headingDeviationStartTime = null
                     headingDeviationCount = 0
