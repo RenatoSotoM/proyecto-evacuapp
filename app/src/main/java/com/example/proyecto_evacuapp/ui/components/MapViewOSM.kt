@@ -126,6 +126,10 @@ fun MapViewOSM(
         }
     }
 
+    val coverageRingsOverlay = remember(mapView) {
+        FolderOverlay().also { mapView.overlays.add(it) }
+    }
+
     val safeZonesOverlay = remember(mapView) {
         FolderOverlay().also { mapView.overlays.add(it) }
     }
@@ -150,16 +154,6 @@ fun MapViewOSM(
         }
     }
 
-    val userMarker = remember(mapView) {
-        Marker(mapView).apply {
-            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-            title = "Tu ubicación actual"
-            icon = getScaledMarkerDrawable(context, R.drawable.ic_navigation_arrow, 20, 20)
-            setInfoWindow(null)
-            mapView.overlays.add(this)
-        }
-    }
-
     val destinationMarker = remember(mapView) {
         Marker(mapView).apply {
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
@@ -169,8 +163,14 @@ fun MapViewOSM(
         }
     }
 
-    val coverageRingsOverlay = remember(mapView) {
-        FolderOverlay().also { mapView.overlays.add(it) }
+    val userMarker = remember(mapView) {
+        Marker(mapView).apply {
+            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+            title = "Tu ubicación actual"
+            icon = getScaledMarkerDrawable(context, R.drawable.ic_navigation_arrow, 20, 20)
+            setInfoWindow(null)
+            mapView.overlays.add(this)
+        }
     }
 
     // Cambiar Estilo de Mapa Dinámico (NORMAL, DARK, MINIMALIST, HYBRID)
@@ -191,7 +191,6 @@ fun MapViewOSM(
         if (showCoverageRings && latitude != null && longitude != null) {
             val center = GeoPoint(latitude, longitude)
 
-            // Anillo 1: 0 - 5 km (Verde)
             val ring1 = Polygon(mapView).apply {
                 title = "Anillo 1 (0-5 km)"
                 points = Polygon.pointsAsCircle(center, 5000.0)
@@ -200,7 +199,6 @@ fun MapViewOSM(
                 fillPaint.color = AndroidColor.parseColor("#0D00E676")
             }
 
-            // Anillo 2: 5 - 15 km (Ámbar)
             val ring2 = Polygon(mapView).apply {
                 title = "Anillo 2 (5-15 km)"
                 points = Polygon.pointsAsCircle(center, 15000.0)
@@ -209,7 +207,6 @@ fun MapViewOSM(
                 fillPaint.color = AndroidColor.parseColor("#0DFFB300")
             }
 
-            // Anillo 3: 15 - 30 km (Azul)
             val ring3 = Polygon(mapView).apply {
                 title = "Anillo 3 (15-30 km)"
                 points = Polygon.pointsAsCircle(center, 30000.0)
@@ -227,12 +224,23 @@ fun MapViewOSM(
 
     // Actualizar Ubicación de Usuario Suave (Snap-to-Road + Interpolar 60fps sin tirones)
     var currentAnimator by remember { androidx.compose.runtime.mutableStateOf<android.animation.ValueAnimator?>(null) }
+    var activeSegmentIndex by remember { mutableIntStateOf(0) }
+    var lastValidBearing by remember { mutableFloatStateOf(0f) }
+
+    LaunchedEffect(routePoints) {
+        activeSegmentIndex = 0
+    }
 
     LaunchedEffect(latitude, longitude, isTrackingUser, UserLocationState.currentBearing) {
         if (latitude != null && longitude != null) {
             val snappedCoord = com.example.proyecto_evacuapp.domain.engine.LocalRouteEngine.snapCoordinateToNearestGraphEdge(latitude, longitude)
             val targetLocation = snappedCoord.toGeoPoint()
-            val targetBearing = UserLocationState.currentBearing ?: 0f
+
+            val rawBearing = UserLocationState.currentBearing ?: 0f
+            if (rawBearing > 0f) {
+                lastValidBearing = rawBearing
+            }
+            val targetBearing = if (rawBearing > 0f) rawBearing else lastValidBearing
 
             // Estabilizar orientación del mapa con el Norte Hacia Arriba (0°) para mantener etiquetas siempre derechas
             mapView.mapOrientation = 0f
@@ -240,10 +248,15 @@ fun MapViewOSM(
             val startPos = userMarker.position
             if (startPos == null || (startPos.latitude == 0.0 && startPos.longitude == 0.0)) {
                 userMarker.position = targetLocation
-                userMarker.rotation = targetBearing
+                userMarker.rotation = -targetBearing
                 userMarker.isEnabled = true
                 if (isTrackingUser) {
                     mapView.controller.setCenter(targetLocation)
+                }
+
+                if (mapView.overlays.contains(userMarker)) {
+                    mapView.overlays.remove(userMarker)
+                    mapView.overlays.add(userMarker)
                 }
                 mapView.invalidate()
             } else {
@@ -262,10 +275,25 @@ fun MapViewOSM(
                         val interpPoint = GeoPoint(interpLat, interpLon)
                         userMarker.position = interpPoint
 
-                        if (targetBearing >= 0f) {
-                            val shortAngle = ((((targetBearing - startBearing) % 360) + 540) % 360) - 180
-                            val interpBearing = startBearing + shortAngle * f
-                            userMarker.rotation = interpBearing
+                        val shortAngle = ((((targetBearing - startBearing) % 360) + 540) % 360) - 180
+                        val interpBearing = startBearing + shortAngle * f
+                        userMarker.rotation = -interpBearing
+
+                        // Recorte visual progresivo de la polilínea (Trazado Waze sin mutar routePoints)
+                        if (routePoints.size >= 2) {
+                            val (trimmedPoints, nextIdx) = trimRoutePointsForCursor(
+                                cursorPoint = interpPoint,
+                                originalRoutePoints = routePoints,
+                                currentSegmentIndex = activeSegmentIndex
+                            )
+                            activeSegmentIndex = nextIdx
+                            routePolyline.setPoints(trimmedPoints)
+                        }
+
+                        // Garantizar Z-order: userMarker siempre AL FINAL (por encima de todo)
+                        if (mapView.overlays.contains(userMarker)) {
+                            mapView.overlays.remove(userMarker)
+                            mapView.overlays.add(userMarker)
                         }
 
                         userMarker.isEnabled = true
@@ -423,6 +451,13 @@ fun MapViewOSM(
         } else {
             destinationMarker.setVisible(false)
         }
+
+        // Z-order: userMarker siempre al final
+        if (mapView.overlays.contains(userMarker)) {
+            mapView.overlays.remove(userMarker)
+            mapView.overlays.add(userMarker)
+        }
+
         mapView.invalidate()
     }
 
@@ -456,6 +491,68 @@ fun MapViewOSM(
         factory = { mapView },
         modifier = modifier.fillMaxSize()
     )
+}
+
+private fun trimRoutePointsForCursor(
+    cursorPoint: GeoPoint,
+    originalRoutePoints: List<GeoPoint>,
+    currentSegmentIndex: Int
+): Pair<List<GeoPoint>, Int> {
+    if (originalRoutePoints.size < 2) return Pair(originalRoutePoints, 0)
+
+    var bestIndex = currentSegmentIndex.coerceIn(0, originalRoutePoints.size - 2)
+    var minDistance = Double.MAX_VALUE
+
+    val searchEnd = (bestIndex + 15).coerceAtMost(originalRoutePoints.size - 2)
+    for (i in bestIndex..searchEnd) {
+        val p1 = originalRoutePoints[i]
+        val p2 = originalRoutePoints[i + 1]
+        val (proj, dist) = projectPointToSegmentWithDistance(cursorPoint, p1, p2)
+        if (dist < minDistance) {
+            minDistance = dist
+            bestIndex = i
+        }
+    }
+
+    val trimmedList = mutableListOf<GeoPoint>()
+    trimmedList.add(cursorPoint)
+    for (i in bestIndex + 1 until originalRoutePoints.size) {
+        trimmedList.add(originalRoutePoints[i])
+    }
+
+    return Pair(trimmedList, bestIndex)
+}
+
+private fun projectPointToSegmentWithDistance(
+    point: GeoPoint,
+    start: GeoPoint,
+    end: GeoPoint
+): Pair<GeoPoint, Double> {
+    val pLat = point.latitude
+    val pLon = point.longitude
+    val aLat = start.latitude
+    val aLon = start.longitude
+    val bLat = end.latitude
+    val bLon = end.longitude
+
+    val dLat = bLat - aLat
+    val dLon = bLon - aLon
+
+    if (dLat == 0.0 && dLon == 0.0) {
+        val dist = point.distanceToAsDouble(start)
+        return Pair(start, dist)
+    }
+
+    val uLat = pLat - aLat
+    val uLon = pLon - aLon
+    val t = ((uLat * dLat + uLon * dLon) / (dLat * dLat + dLon * dLon)).coerceIn(0.0, 1.0)
+
+    val projLat = aLat + t * dLat
+    val projLon = aLon + t * dLon
+    val projPoint = GeoPoint(projLat, projLon)
+    val distance = point.distanceToAsDouble(projPoint)
+
+    return Pair(projPoint, distance)
 }
 
 private fun createIncidentMarkerBitmap(context: Context, incident: SharedIncident): Drawable {
@@ -539,40 +636,28 @@ fun dibujarZonaAfectada(mapView: MapView, puntos: List<GeoPoint>) {
     mapView.invalidate()
 }
 
-private fun getScaledMarkerDrawable(context: Context, resId: Int, targetWidthDp: Int = 40, targetHeightDp: Int = 40): Drawable {
-    val drawable = ContextCompat.getDrawable(context, resId) ?: return ContextCompat.getDrawable(context, android.R.drawable.ic_menu_myplaces)!!
+private fun getScaledMarkerDrawable(context: Context, resId: Int, widthDp: Int, heightDp: Int): Drawable {
     val density = context.resources.displayMetrics.density
-    val widthPx = (targetWidthDp * density).toInt()
-    val heightPx = (targetHeightDp * density).toInt()
+    val widthPx = (widthDp * density).toInt()
+    val heightPx = (heightDp * density).toInt()
 
-    val bitmap = if (drawable is BitmapDrawable) {
-        drawable.bitmap
-    } else {
-        val bitmap = Bitmap.createBitmap(
-            drawable.intrinsicWidth.takeIf { it > 0 } ?: widthPx,
-            drawable.intrinsicHeight.takeIf { it > 0 } ?: heightPx,
-            Bitmap.Config.ARGB_8888
-        )
-        val canvas = Canvas(bitmap)
-        drawable.setBounds(0, 0, canvas.width, canvas.height)
-        drawable.draw(canvas)
-        bitmap
-    }
+    val drawable = ContextCompat.getDrawable(context, resId) ?: return BitmapDrawable(context.resources, Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888))
 
-    val scaledBitmap = Bitmap.createScaledBitmap(bitmap, widthPx, heightPx, true)
-    return BitmapDrawable(context.resources, scaledBitmap)
+    val bitmap = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    drawable.setBounds(0, 0, widthPx, heightPx)
+    drawable.draw(canvas)
+
+    return BitmapDrawable(context.resources, bitmap)
 }
 
-fun formatRelativeTime(createdAtMillis: Long): String {
-    val diffMillis = (System.currentTimeMillis() - createdAtMillis).coerceAtLeast(0L)
-    val diffMinutes = diffMillis / 60_000
-    val diffHours = diffMinutes / 60
+fun formatRelativeTime(millis: Long): String {
+    val diffSec = (System.currentTimeMillis() - millis) / 1000
+    if (diffSec < 60) return "hace unos segundos"
+    val diffMin = diffSec / 60
+    if (diffMin < 60) return "hace ${diffMin}m"
+    val diffHours = diffMin / 60
+    if (diffHours < 24) return "hace ${diffHours}h"
     val diffDays = diffHours / 24
-
-    return when {
-        diffMinutes < 1 -> "hace un instante"
-        diffMinutes < 60 -> "hace $diffMinutes min"
-        diffHours < 24 -> "hace $diffHours h"
-        else -> "hace $diffDays día${if (diffDays > 1) "s" else ""}"
-    }
+    return "hace ${diffDays}d"
 }
